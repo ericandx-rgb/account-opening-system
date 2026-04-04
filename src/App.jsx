@@ -222,9 +222,10 @@ export default function App() {
   const [editingUserEmail, setEditingUserEmail] = useState("");
 
   const role = userProfile?.role || "viewer";
-  const canEdit = role === "admin" || role === "editor";
+  const canInputDaily = role === "admin" || role === "editor";
   const canManageStaff = role === "admin";
   const canManageUsers = role === "admin";
+  const canSeePeoplePage = role === "admin";
 
   const loadAllAppData = async (firebaseUser) => {
     const email = normalizeEmail(firebaseUser.email || "");
@@ -283,6 +284,7 @@ export default function App() {
         setUsersList([]);
         setStaffOptions(DEFAULT_STAFF);
         setMatrix(createEmptyMatrix(DEFAULT_STAFF));
+        setActivePage("opening");
         setFirebaseReady(true);
         setLoading(false);
         return;
@@ -306,6 +308,12 @@ export default function App() {
     setMatrix(ensureMatrixShape(allData[date] || {}, staffOptions));
   }, [date, allData, staffOptions]);
 
+  useEffect(() => {
+    if (!canSeePeoplePage && activePage === "people") {
+      setActivePage("opening");
+    }
+  }, [canSeePeoplePage, activePage]);
+
   const handleGoogleLogin = async () => {
     setAuthError("");
     try {
@@ -322,7 +330,7 @@ export default function App() {
   };
 
   const handleChange = (staff, biz, value) => {
-    if (!canEdit) return;
+    if (!canInputDaily) return;
     const clean = value === "" ? "" : String(Math.max(0, Number(value) || 0));
     setMatrix((prev) => ({
       ...prev,
@@ -334,7 +342,7 @@ export default function App() {
   };
 
   const handleSave = async () => {
-    if (!canEdit) return;
+    if (!canInputDaily) return;
     setSaving(true);
 
     try {
@@ -459,6 +467,7 @@ export default function App() {
   };
 
   const handleEditUser = (item) => {
+    if (!canManageUsers) return;
     setActivePage("people");
     setEditingUserEmail(item.id || item.email || "");
     setUserForm({
@@ -501,7 +510,10 @@ export default function App() {
 
       setUsersList((prev) => {
         const filtered = prev.filter((item) => item.id !== normalizedEmail);
-        return sortUsers([...filtered, { id: normalizedEmail, ...payload, updatedAt: new Date() }]);
+        return sortUsers([
+          ...filtered,
+          { id: normalizedEmail, ...payload, updatedAt: new Date() },
+        ]);
       });
 
       if (normalizedEmail === normalizeEmail(userProfile?.email)) {
@@ -742,12 +754,14 @@ export default function App() {
           >
             開戶資料與報表
           </button>
-          <button
-            onClick={() => setActivePage("people")}
-            style={activePage === "people" ? activeTabButtonStyle : tabButtonStyle}
-          >
-            人員管理頁
-          </button>
+          {canSeePeoplePage ? (
+            <button
+              onClick={() => setActivePage("people")}
+              style={activePage === "people" ? activeTabButtonStyle : tabButtonStyle}
+            >
+              人員管理頁
+            </button>
+          ) : null}
         </div>
 
         {activePage === "opening" ? (
@@ -768,10 +782,10 @@ export default function App() {
                     onClick={handleSave}
                     style={{
                       ...primaryButtonStyle,
-                      opacity: !canEdit || saving ? 0.6 : 1,
-                      cursor: !canEdit || saving ? "not-allowed" : "pointer",
+                      opacity: !canInputDaily || saving ? 0.6 : 1,
+                      cursor: !canInputDaily || saving ? "not-allowed" : "pointer",
                     }}
-                    disabled={!canEdit || saving}
+                    disabled={!canInputDaily || saving}
                   >
                     {saving ? "儲存中..." : "儲存當日資料"}
                   </button>
@@ -811,11 +825,11 @@ export default function App() {
                                   min="0"
                                   value={matrix?.[staff]?.[biz] ?? ""}
                                   onChange={(e) => handleChange(staff, biz, e.target.value)}
-                                  disabled={!canEdit}
+                                  disabled={!canInputDaily}
                                   style={{
                                     ...cellInputStyle,
-                                    background: canEdit ? "#ffffff" : "#f8fafc",
-                                    opacity: canEdit ? 1 : 0.75,
+                                    background: canInputDaily ? "#ffffff" : "#f8fafc",
+                                    opacity: canInputDaily ? 1 : 0.75,
                                   }}
                                 />
                               </td>
@@ -983,58 +997,54 @@ export default function App() {
             </div>
 
             <div>
-              <div style={cardStyle}>
-                <h2 style={sectionTitleStyle}>營業員維護</h2>
+              {canManageStaff ? (
+                <div style={cardStyle}>
+                  <h2 style={sectionTitleStyle}>營業員維護</h2>
 
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <input
-                    type="text"
-                    placeholder="新增營業員姓名"
-                    value={newStaffName}
-                    onChange={(e) => setNewStaffName(e.target.value)}
-                    style={{ ...inputStyle, flex: 1 }}
-                    disabled={!canManageStaff}
-                  />
-                  <button
-                    onClick={handleAddStaff}
-                    style={{
-                      ...primaryButtonStyle,
-                      opacity: canManageStaff ? 1 : 0.6,
-                      cursor: canManageStaff ? "pointer" : "not-allowed",
-                    }}
-                    disabled={!canManageStaff}
-                  >
-                    新增
-                  </button>
-                </div>
-
-                <div style={{ maxHeight: 360, overflowY: "auto" }}>
-                  {staffOptions.map((staff) => (
-                    <div key={staff} style={staffRowStyle}>
-                      <span>{staff}</span>
-                      <button
-                        onClick={() => handleRemoveStaff(staff)}
-                        style={{
-                          ...dangerButtonStyle,
-                          opacity: canManageStaff ? 1 : 0.6,
-                          cursor: canManageStaff ? "pointer" : "not-allowed",
-                        }}
-                        disabled={!canManageStaff}
-                      >
-                        移除
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                {!canManageStaff && (
-                  <div style={{ marginTop: 12, fontSize: 13, color: "#64748b" }}>
-                    只有 admin 可以維護營業員名單。
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    <input
+                      type="text"
+                      placeholder="新增營業員姓名"
+                      value={newStaffName}
+                      onChange={(e) => setNewStaffName(e.target.value)}
+                      style={{ ...inputStyle, flex: 1 }}
+                      disabled={!canManageStaff}
+                    />
+                    <button
+                      onClick={handleAddStaff}
+                      style={{
+                        ...primaryButtonStyle,
+                        opacity: canManageStaff ? 1 : 0.6,
+                        cursor: canManageStaff ? "pointer" : "not-allowed",
+                      }}
+                      disabled={!canManageStaff}
+                    >
+                      新增
+                    </button>
                   </div>
-                )}
-              </div>
 
-              <div style={{ ...cardStyle, marginTop: 18 }}>
+                  <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                    {staffOptions.map((staff) => (
+                      <div key={staff} style={staffRowStyle}>
+                        <span>{staff}</span>
+                        <button
+                          onClick={() => handleRemoveStaff(staff)}
+                          style={{
+                            ...dangerButtonStyle,
+                            opacity: canManageStaff ? 1 : 0.6,
+                            cursor: canManageStaff ? "pointer" : "not-allowed",
+                          }}
+                          disabled={!canManageStaff}
+                        >
+                          移除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div style={{ ...cardStyle, marginTop: canManageStaff ? 18 : 0 }}>
                 <h2 style={sectionTitleStyle}>歷史日期回溯修改</h2>
 
                 <div style={{ color: "#64748b", marginBottom: 12, lineHeight: 1.7 }}>
@@ -1076,7 +1086,7 @@ export default function App() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : canSeePeoplePage ? (
           <div style={peopleGridStyle}>
             <div style={cardStyle}>
               <h2 style={sectionTitleStyle}>系統使用者維護</h2>
@@ -1172,12 +1182,6 @@ export default function App() {
                   清空表單
                 </button>
               </div>
-
-              {!canManageUsers ? (
-                <div style={{ marginTop: 12, fontSize: 13, color: "#64748b" }}>
-                  只有 admin 可以維護系統使用者。
-                </div>
-              ) : null}
             </div>
 
             <div style={{ ...cardStyle, marginTop: 18 }}>
@@ -1202,7 +1206,9 @@ export default function App() {
                       usersList.map((item) => (
                         <tr key={item.id}>
                           <td style={nameCellStyle}>{item.name || "—"}</td>
-                          <td style={{ ...tableCellStyle, textAlign: "left" }}>{item.email || item.id}</td>
+                          <td style={{ ...tableCellStyle, textAlign: "left" }}>
+                            {item.email || item.id}
+                          </td>
                           <td style={tableCellStyle}>
                             <span style={roleBadgeStyle(item.role)}>{item.role || "viewer"}</span>
                           </td>
@@ -1212,7 +1218,14 @@ export default function App() {
                             </span>
                           </td>
                           <td style={tableCellStyle}>
-                            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 8,
+                                justifyContent: "center",
+                                flexWrap: "wrap",
+                              }}
+                            >
                               <button
                                 onClick={() => handleEditUser(item)}
                                 style={secondaryButtonStyle}
@@ -1250,7 +1263,7 @@ export default function App() {
               </div>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
