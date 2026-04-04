@@ -178,6 +178,20 @@ function downloadExcelLikeFile(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
+function normalizeEmail(email) {
+  return (email || "").trim().toLowerCase();
+}
+
+function sortUsers(users) {
+  return [...users].sort((a, b) => {
+    if ((a.role || "") !== (b.role || "")) {
+      const order = { admin: 1, editor: 2, viewer: 3 };
+      return (order[a.role] || 9) - (order[b.role] || 9);
+    }
+    return (a.email || "").localeCompare(b.email || "");
+  });
+}
+
 export default function App() {
   const [firebaseReady, setFirebaseReady] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -185,6 +199,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [authError, setAuthError] = useState("");
+  const [activePage, setActivePage] = useState("opening");
 
   const [staffOptions, setStaffOptions] = useState(DEFAULT_STAFF);
   const [date, setDate] = useState(getToday());
@@ -196,9 +211,65 @@ export default function App() {
   const [reportMonth, setReportMonth] = useState(getToday().slice(0, 7));
   const [reportYear, setReportYear] = useState(getToday().slice(0, 4));
 
+  const [usersList, setUsersList] = useState([]);
+  const [userForm, setUserForm] = useState({
+    email: "",
+    name: "",
+    role: "editor",
+    active: true,
+  });
+  const [userSaving, setUserSaving] = useState(false);
+  const [editingUserEmail, setEditingUserEmail] = useState("");
+
   const role = userProfile?.role || "viewer";
   const canEdit = role === "admin" || role === "editor";
   const canManageStaff = role === "admin";
+  const canManageUsers = role === "admin";
+
+  const loadAllAppData = async (firebaseUser) => {
+    const email = normalizeEmail(firebaseUser.email || "");
+    const userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
+
+    if (!userSnap.exists()) {
+      setAuthError("此帳號尚未加入系統白名單，請先請管理員建立 users 權限資料。");
+      await signOut(auth);
+      return;
+    }
+
+    const profile = userSnap.data();
+
+    if (profile.active === false) {
+      setAuthError("此帳號已停用。");
+      await signOut(auth);
+      return;
+    }
+
+    const staffSnap = await getDoc(doc(db, APP_META_COLLECTION, STAFF_META_DOC));
+    const dbStaff =
+      staffSnap.exists() && Array.isArray(staffSnap.data()?.names)
+        ? staffSnap.data().names
+        : DEFAULT_STAFF;
+
+    const recordsSnap = await getDocs(collection(db, DAILY_RECORDS_COLLECTION));
+    const loadedData = {};
+    recordsSnap.forEach((recordDoc) => {
+      const payload = recordDoc.data();
+      loadedData[recordDoc.id] = ensureMatrixShape(payload.data || {}, dbStaff);
+    });
+
+    const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
+    const loadedUsers = [];
+    usersSnap.forEach((item) => {
+      loadedUsers.push({ id: item.id, ...item.data() });
+    });
+
+    setUser(firebaseUser);
+    setUserProfile({ email, ...profile });
+    setStaffOptions(dbStaff);
+    setAllData(loadedData);
+    setMatrix(ensureMatrixShape(loadedData[date] || {}, dbStaff));
+    setUsersList(sortUsers(loadedUsers));
+  };
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -209,6 +280,7 @@ export default function App() {
         setUser(null);
         setUserProfile(null);
         setAllData({});
+        setUsersList([]);
         setStaffOptions(DEFAULT_STAFF);
         setMatrix(createEmptyMatrix(DEFAULT_STAFF));
         setFirebaseReady(true);
@@ -217,43 +289,7 @@ export default function App() {
       }
 
       try {
-        const email = (firebaseUser.email || "").toLowerCase();
-        const userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
-
-        if (!userSnap.exists()) {
-          setAuthError("此帳號尚未加入系統白名單，請先請管理員建立 users 權限資料。");
-          await signOut(auth);
-          setLoading(false);
-          return;
-        }
-
-        const profile = userSnap.data();
-
-        if (profile.active === false) {
-          setAuthError("此帳號已停用。");
-          await signOut(auth);
-          setLoading(false);
-          return;
-        }
-
-        const staffSnap = await getDoc(doc(db, APP_META_COLLECTION, STAFF_META_DOC));
-        const dbStaff =
-          staffSnap.exists() && Array.isArray(staffSnap.data()?.names)
-            ? staffSnap.data().names
-            : DEFAULT_STAFF;
-
-        const recordsSnap = await getDocs(collection(db, DAILY_RECORDS_COLLECTION));
-        const loadedData = {};
-        recordsSnap.forEach((recordDoc) => {
-          const payload = recordDoc.data();
-          loadedData[recordDoc.id] = ensureMatrixShape(payload.data || {}, dbStaff);
-        });
-
-        setUser(firebaseUser);
-        setUserProfile({ email, ...profile });
-        setStaffOptions(dbStaff);
-        setAllData(loadedData);
-        setMatrix(ensureMatrixShape(loadedData[date] || {}, dbStaff));
+        await loadAllAppData(firebaseUser);
       } catch (error) {
         console.error(error);
         setAuthError("讀取 Firebase 資料失敗，請稍後再試。");
@@ -412,6 +448,145 @@ export default function App() {
     }
   };
 
+  const resetUserForm = () => {
+    setUserForm({
+      email: "",
+      name: "",
+      role: "editor",
+      active: true,
+    });
+    setEditingUserEmail("");
+  };
+
+  const handleEditUser = (item) => {
+    setActivePage("people");
+    setEditingUserEmail(item.id || item.email || "");
+    setUserForm({
+      email: item.email || "",
+      name: item.name || "",
+      role: item.role || "editor",
+      active: item.active !== false,
+    });
+  };
+
+  const handleSaveUser = async () => {
+    if (!canManageUsers) return;
+
+    const normalizedEmail = normalizeEmail(userForm.email);
+    if (!normalizedEmail) {
+      alert("請輸入 email");
+      return;
+    }
+    if (!userForm.name.trim()) {
+      alert("請輸入姓名");
+      return;
+    }
+    if (!["admin", "editor", "viewer"].includes(userForm.role)) {
+      alert("請選擇角色");
+      return;
+    }
+
+    setUserSaving(true);
+    try {
+      const payload = {
+        email: normalizedEmail,
+        name: userForm.name.trim(),
+        role: userForm.role,
+        active: Boolean(userForm.active),
+        updatedBy: user?.email || "",
+        updatedAt: serverTimestamp(),
+      };
+
+      await setDoc(doc(db, USERS_COLLECTION, normalizedEmail), payload);
+
+      setUsersList((prev) => {
+        const filtered = prev.filter((item) => item.id !== normalizedEmail);
+        return sortUsers([...filtered, { id: normalizedEmail, ...payload, updatedAt: new Date() }]);
+      });
+
+      if (normalizedEmail === normalizeEmail(userProfile?.email)) {
+        setUserProfile((prev) => ({
+          ...prev,
+          ...payload,
+        }));
+      }
+
+      alert(editingUserEmail ? "人員權限已更新" : "已新增人員帳號");
+      resetUserForm();
+    } catch (error) {
+      console.error(error);
+      alert("儲存人員失敗");
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const handleDeleteUser = async (targetEmail) => {
+    if (!canManageUsers) return;
+    const normalizedEmail = normalizeEmail(targetEmail);
+    if (!normalizedEmail) return;
+
+    if (normalizedEmail === normalizeEmail(user?.email)) {
+      alert("不能刪除目前登入中的 admin 帳號");
+      return;
+    }
+
+    if (!window.confirm(`確定要刪除 ${normalizedEmail} 的帳號權限嗎？`)) {
+      return;
+    }
+
+    try {
+      await deleteDoc(doc(db, USERS_COLLECTION, normalizedEmail));
+      setUsersList((prev) => prev.filter((item) => item.id !== normalizedEmail));
+      if (editingUserEmail === normalizedEmail) {
+        resetUserForm();
+      }
+      alert("已刪除人員權限");
+    } catch (error) {
+      console.error(error);
+      alert("刪除人員失敗");
+    }
+  };
+
+  const handleToggleUserActive = async (item) => {
+    if (!canManageUsers) return;
+    const normalizedEmail = normalizeEmail(item.email || item.id);
+    if (!normalizedEmail) return;
+
+    if (normalizedEmail === normalizeEmail(user?.email) && item.active !== false) {
+      alert("不能停用目前登入中的 admin 帳號");
+      return;
+    }
+
+    try {
+      const nextActive = item.active === false;
+      const payload = {
+        email: normalizedEmail,
+        name: item.name || "",
+        role: item.role || "editor",
+        active: nextActive,
+        updatedBy: user?.email || "",
+        updatedAt: serverTimestamp(),
+      };
+
+      await setDoc(doc(db, USERS_COLLECTION, normalizedEmail), payload);
+      setUsersList((prev) =>
+        sortUsers(
+          prev.map((u) =>
+            u.id === normalizedEmail ? { ...u, ...payload, updatedAt: new Date() } : u
+          )
+        )
+      );
+
+      if (normalizedEmail === normalizeEmail(userProfile?.email)) {
+        setUserProfile((prev) => ({ ...prev, active: nextActive }));
+      }
+    } catch (error) {
+      console.error(error);
+      alert("更新啟用狀態失敗");
+    }
+  };
+
   const allRows = useMemo(() => {
     let rows = [];
     Object.keys(allData).forEach((d) => {
@@ -522,9 +697,7 @@ export default function App() {
             請使用公司 Google 帳號登入。登入後系統會自動檢查 Firestore users 白名單與角色權限。
           </p>
 
-          {authError ? (
-            <div style={errorBoxStyle}>{authError}</div>
-          ) : null}
+          {authError ? <div style={errorBoxStyle}>{authError}</div> : null}
 
           <button onClick={handleGoogleLogin} style={primaryButtonStyle}>
             使用 Google 登入
@@ -543,8 +716,8 @@ export default function App() {
       <div style={containerStyle}>
         <div style={headerStyle}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 34 }}>開戶統計系統</h1>
-            <div style={{ color: "#64748b", marginTop: 8, fontSize: 14 }}>
+            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>開戶統計系統</h1>
+            <div style={{ color: "#475569", marginTop: 8, fontSize: 14 }}>
               已支援：Google 登入、白名單權限、多人同步、匯出 Excel、日／週／月／年報表、可回溯修改、彈性增減營業員
             </div>
           </div>
@@ -562,331 +735,522 @@ export default function App() {
           </div>
         </div>
 
-        <div style={mainGridStyle}>
-          <div>
-            <div style={cardStyle}>
-              <h2 style={sectionTitleStyle}>每日開戶數據輸入</h2>
+        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+          <button
+            onClick={() => setActivePage("opening")}
+            style={activePage === "opening" ? activeTabButtonStyle : tabButtonStyle}
+          >
+            開戶資料與報表
+          </button>
+          <button
+            onClick={() => setActivePage("people")}
+            style={activePage === "people" ? activeTabButtonStyle : tabButtonStyle}
+          >
+            人員管理頁
+          </button>
+        </div>
 
-              <div style={toolbarStyle}>
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  style={inputStyle}
-                />
+        {activePage === "opening" ? (
+          <div style={mainGridStyle}>
+            <div>
+              <div style={cardStyle}>
+                <h2 style={sectionTitleStyle}>每日開戶數據輸入</h2>
 
-                <button
-                  onClick={handleSave}
-                  style={{
-                    ...primaryButtonStyle,
-                    opacity: !canEdit || saving ? 0.6 : 1,
-                    cursor: !canEdit || saving ? "not-allowed" : "pointer",
-                  }}
-                  disabled={!canEdit || saving}
-                >
-                  {saving ? "儲存中..." : "儲存當日資料"}
-                </button>
+                <div style={toolbarStyle}>
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    style={inputStyle}
+                  />
 
-                <div style={{ fontSize: 15, color: "#334155" }}>
-                  當日合計：<b>{currentDayTotal}</b>
+                  <button
+                    onClick={handleSave}
+                    style={{
+                      ...primaryButtonStyle,
+                      opacity: !canEdit || saving ? 0.6 : 1,
+                      cursor: !canEdit || saving ? "not-allowed" : "pointer",
+                    }}
+                    disabled={!canEdit || saving}
+                  >
+                    {saving ? "儲存中..." : "儲存當日資料"}
+                  </button>
+
+                  <div style={{ fontSize: 15, color: "#334155" }}>
+                    當日合計：<b>{currentDayTotal}</b>
+                  </div>
+                </div>
+
+                <div style={tableWrapStyle}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={tableHeadStyle}>營業員 / 日期</th>
+                        {BUSINESS_TYPES.map((biz) => (
+                          <th key={biz} style={tableHeadStyle}>
+                            {biz}
+                          </th>
+                        ))}
+                        <th style={tableHeadStyle}>合計</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {staffOptions.map((staff) => {
+                        const rowTotal = BUSINESS_TYPES.reduce(
+                          (sum, biz) => sum + safeNumber(matrix?.[staff]?.[biz]),
+                          0
+                        );
+
+                        return (
+                          <tr key={staff}>
+                            <td style={nameCellStyle}>{staff}</td>
+                            {BUSINESS_TYPES.map((biz) => (
+                              <td key={biz} style={tableCellStyle}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={matrix?.[staff]?.[biz] ?? ""}
+                                  onChange={(e) => handleChange(staff, biz, e.target.value)}
+                                  disabled={!canEdit}
+                                  style={{
+                                    ...cellInputStyle,
+                                    background: canEdit ? "#ffffff" : "#f8fafc",
+                                    opacity: canEdit ? 1 : 0.75,
+                                  }}
+                                />
+                              </td>
+                            ))}
+                            <td style={totalCellStyle}>{rowTotal}</td>
+                          </tr>
+                        );
+                      })}
+
+                      <tr style={{ background: "#f8fafc" }}>
+                        <td style={nameCellStyle}>欄位合計</td>
+                        {BUSINESS_TYPES.map((biz) => (
+                          <td key={biz} style={totalCellStyle}>
+                            {staffOptions.reduce(
+                              (sum, staff) => sum + safeNumber(matrix?.[staff]?.[biz]),
+                              0
+                            )}
+                          </td>
+                        ))}
+                        <td style={totalCellStyle}>{currentDayTotal}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
-              <div style={tableWrapStyle}>
-                <table style={tableStyle}>
-                  <thead>
-                    <tr>
-                      <th style={tableHeadStyle}>營業員 / 日期</th>
-                      {BUSINESS_TYPES.map((biz) => (
-                        <th key={biz} style={tableHeadStyle}>
-                          {biz}
-                        </th>
-                      ))}
-                      <th style={tableHeadStyle}>合計</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {staffOptions.map((staff) => {
-                      const rowTotal = BUSINESS_TYPES.reduce(
-                        (sum, biz) => sum + safeNumber(matrix?.[staff]?.[biz]),
-                        0
-                      );
+              <div style={{ ...cardStyle, marginTop: 18 }}>
+                <h2 style={sectionTitleStyle}>報表中心</h2>
 
-                      return (
-                        <tr key={staff}>
-                          <td style={nameCellStyle}>{staff}</td>
-                          {BUSINESS_TYPES.map((biz) => (
-                            <td key={biz} style={tableCellStyle}>
-                              <input
-                                type="number"
-                                min="0"
-                                value={matrix?.[staff]?.[biz] ?? ""}
-                                onChange={(e) => handleChange(staff, biz, e.target.value)}
-                                disabled={!canEdit}
-                                style={{
-                                  ...cellInputStyle,
-                                  background: canEdit ? "#ffffff" : "#f8fafc",
-                                  opacity: canEdit ? 1 : 0.75,
-                                }}
-                              />
-                            </td>
-                          ))}
-                          <td style={totalCellStyle}>{rowTotal}</td>
+                <div style={toolbarStyle}>
+                  <button
+                    onClick={() => setReportType("daily")}
+                    style={reportType === "daily" ? activeTabButtonStyle : tabButtonStyle}
+                  >
+                    日報表
+                  </button>
+
+                  <button
+                    onClick={() => setReportType("weekly")}
+                    style={reportType === "weekly" ? activeTabButtonStyle : tabButtonStyle}
+                  >
+                    週報表
+                  </button>
+
+                  <button
+                    onClick={() => setReportType("monthly")}
+                    style={reportType === "monthly" ? activeTabButtonStyle : tabButtonStyle}
+                  >
+                    月報表
+                  </button>
+
+                  <button
+                    onClick={() => setReportType("yearly")}
+                    style={reportType === "yearly" ? activeTabButtonStyle : tabButtonStyle}
+                  >
+                    年報表
+                  </button>
+
+                  <button onClick={exportReport} style={successButtonStyle}>
+                    匯出 Excel
+                  </button>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  {(reportType === "daily" || reportType === "weekly") && (
+                    <input
+                      type="date"
+                      value={reportDate}
+                      onChange={(e) => setReportDate(e.target.value)}
+                      style={inputStyle}
+                    />
+                  )}
+
+                  {reportType === "monthly" && (
+                    <input
+                      type="month"
+                      value={reportMonth}
+                      onChange={(e) => setReportMonth(e.target.value)}
+                      style={inputStyle}
+                    />
+                  )}
+
+                  {reportType === "yearly" && (
+                    <input
+                      type="number"
+                      value={reportYear}
+                      onChange={(e) => setReportYear(e.target.value)}
+                      style={{ ...inputStyle, width: 120 }}
+                    />
+                  )}
+                </div>
+
+                <div style={{ marginBottom: 14, fontSize: 15 }}>
+                  總開戶數：<b>{reportSummary.total}</b>
+                </div>
+
+                <div style={tableWrapStyle}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={lightHeadStyle}>日期</th>
+                        <th style={lightHeadStyle}>營業員</th>
+                        {BUSINESS_TYPES.map((biz) => (
+                          <th key={biz} style={lightHeadStyle}>
+                            {biz}
+                          </th>
+                        ))}
+                        <th style={lightHeadStyle}>合計</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupedReportRows.length ? (
+                        groupedReportRows.map((row, idx) => (
+                          <tr key={`${row.date}_${row.staff}_${idx}`}>
+                            <td style={tableCellStyle}>{row.date}</td>
+                            <td style={nameCellStyle}>{row.staff}</td>
+                            {BUSINESS_TYPES.map((biz) => (
+                              <td key={biz} style={tableCellStyle}>
+                                {row.values[biz] || 0}
+                              </td>
+                            ))}
+                            <td style={totalCellStyle}>{row.total}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td
+                            colSpan={BUSINESS_TYPES.length + 3}
+                            style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
+                          >
+                            目前沒有資料
+                          </td>
                         </tr>
-                      );
-                    })}
+                      )}
+                    </tbody>
+                  </table>
+                </div>
 
-                    <tr style={{ background: "#f8fafc" }}>
-                      <td style={nameCellStyle}>欄位合計</td>
-                      {BUSINESS_TYPES.map((biz) => (
-                        <td key={biz} style={totalCellStyle}>
-                          {staffOptions.reduce(
-                            (sum, staff) => sum + safeNumber(matrix?.[staff]?.[biz]),
-                            0
-                          )}
-                        </td>
+                <div style={summaryGridStyle}>
+                  <div style={summaryCardStyle}>
+                    <h3 style={summaryTitleStyle}>依營業員統計</h3>
+                    <ul style={listStyle}>
+                      {reportSummary.byStaff.map(([name, qty]) => (
+                        <li key={name} style={listItemStyle}>
+                          <span>{name}</span>
+                          <b>{qty}</b>
+                        </li>
                       ))}
-                      <td style={totalCellStyle}>{currentDayTotal}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                    </ul>
+                  </div>
+
+                  <div style={summaryCardStyle}>
+                    <h3 style={summaryTitleStyle}>依業務別統計</h3>
+                    <ul style={listStyle}>
+                      {reportSummary.byBiz.map(([name, qty]) => (
+                        <li key={name} style={listItemStyle}>
+                          <span>{name}</span>
+                          <b>{qty}</b>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div style={{ ...cardStyle, marginTop: 18 }}>
-              <h2 style={sectionTitleStyle}>報表中心</h2>
+            <div>
+              <div style={cardStyle}>
+                <h2 style={sectionTitleStyle}>營業員維護</h2>
 
-              <div style={toolbarStyle}>
-                <button
-                  onClick={() => setReportType("daily")}
-                  style={reportType === "daily" ? activeTabButtonStyle : tabButtonStyle}
-                >
-                  日報表
-                </button>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <input
+                    type="text"
+                    placeholder="新增營業員姓名"
+                    value={newStaffName}
+                    onChange={(e) => setNewStaffName(e.target.value)}
+                    style={{ ...inputStyle, flex: 1 }}
+                    disabled={!canManageStaff}
+                  />
+                  <button
+                    onClick={handleAddStaff}
+                    style={{
+                      ...primaryButtonStyle,
+                      opacity: canManageStaff ? 1 : 0.6,
+                      cursor: canManageStaff ? "pointer" : "not-allowed",
+                    }}
+                    disabled={!canManageStaff}
+                  >
+                    新增
+                  </button>
+                </div>
 
-                <button
-                  onClick={() => setReportType("weekly")}
-                  style={reportType === "weekly" ? activeTabButtonStyle : tabButtonStyle}
-                >
-                  週報表
-                </button>
+                <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                  {staffOptions.map((staff) => (
+                    <div key={staff} style={staffRowStyle}>
+                      <span>{staff}</span>
+                      <button
+                        onClick={() => handleRemoveStaff(staff)}
+                        style={{
+                          ...dangerButtonStyle,
+                          opacity: canManageStaff ? 1 : 0.6,
+                          cursor: canManageStaff ? "pointer" : "not-allowed",
+                        }}
+                        disabled={!canManageStaff}
+                      >
+                        移除
+                      </button>
+                    </div>
+                  ))}
+                </div>
 
-                <button
-                  onClick={() => setReportType("monthly")}
-                  style={reportType === "monthly" ? activeTabButtonStyle : tabButtonStyle}
-                >
-                  月報表
-                </button>
-
-                <button
-                  onClick={() => setReportType("yearly")}
-                  style={reportType === "yearly" ? activeTabButtonStyle : tabButtonStyle}
-                >
-                  年報表
-                </button>
-
-                <button onClick={exportReport} style={successButtonStyle}>
-                  匯出 Excel
-                </button>
+                {!canManageStaff && (
+                  <div style={{ marginTop: 12, fontSize: 13, color: "#64748b" }}>
+                    只有 admin 可以維護營業員名單。
+                  </div>
+                )}
               </div>
 
-              <div style={{ marginBottom: 14 }}>
-                {(reportType === "daily" || reportType === "weekly") && (
+              <div style={{ ...cardStyle, marginTop: 18 }}>
+                <h2 style={sectionTitleStyle}>歷史日期回溯修改</h2>
+
+                <div style={{ color: "#64748b", marginBottom: 12, lineHeight: 1.7 }}>
+                  直接選日期載入。選到已有資料的日期時，左邊矩陣會自動帶回，修改後再按儲存即可。
+                </div>
+
+                <div style={toolbarStyle}>
                   <input
                     type="date"
-                    value={reportDate}
-                    onChange={(e) => setReportDate(e.target.value)}
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
                     style={inputStyle}
                   />
-                )}
+                  <button onClick={() => handleLoadDate(date)} style={secondaryButtonStyle}>
+                    載入該日資料
+                  </button>
+                </div>
 
-                {reportType === "monthly" && (
-                  <input
-                    type="month"
-                    value={reportMonth}
-                    onChange={(e) => setReportMonth(e.target.value)}
-                    style={inputStyle}
-                  />
-                )}
-
-                {reportType === "yearly" && (
-                  <input
-                    type="number"
-                    value={reportYear}
-                    onChange={(e) => setReportYear(e.target.value)}
-                    style={{ ...inputStyle, width: 120 }}
-                  />
-                )}
+                <div style={{ fontSize: 14, color: "#334155", lineHeight: 1.9 }}>
+                  <div>
+                    目前編輯日期：<b>{formatDate(date)}</b>
+                  </div>
+                  <div>
+                    已儲存歷史筆數：<b>{historyDates.length}</b> 天
+                  </div>
+                  <div>
+                    最早日期：
+                    <b>
+                      {historyDates.length
+                        ? formatDate(historyDates[historyDates.length - 1])
+                        : "—"}
+                    </b>
+                  </div>
+                  <div>
+                    最近日期：
+                    <b>{historyDates.length ? formatDate(historyDates[0]) : "—"}</b>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={peopleGridStyle}>
+            <div style={cardStyle}>
+              <h2 style={sectionTitleStyle}>系統使用者維護</h2>
+              <div style={{ color: "#64748b", marginBottom: 14, lineHeight: 1.7 }}>
+                這裡管理可以登入系統的人員，控制角色與啟用狀態。admin 可新增、編輯、停用與刪除使用者。
               </div>
 
-              <div style={{ marginBottom: 14, fontSize: 15 }}>
-                總開戶數：<b>{reportSummary.total}</b>
+              <div style={formGridStyle}>
+                <div>
+                  <label style={labelStyle}>Email</label>
+                  <input
+                    type="email"
+                    placeholder="name@goodfinance.com"
+                    value={userForm.email}
+                    onChange={(e) =>
+                      setUserForm((prev) => ({ ...prev, email: e.target.value }))
+                    }
+                    style={inputStyle}
+                    disabled={!canManageUsers || Boolean(editingUserEmail)}
+                  />
+                  {editingUserEmail ? (
+                    <div style={hintStyle}>編輯模式下不允許變更 email，需刪除後重新新增。</div>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label style={labelStyle}>姓名</label>
+                  <input
+                    type="text"
+                    placeholder="請輸入姓名"
+                    value={userForm.name}
+                    onChange={(e) =>
+                      setUserForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                    style={inputStyle}
+                    disabled={!canManageUsers}
+                  />
+                </div>
+
+                <div>
+                  <label style={labelStyle}>角色</label>
+                  <select
+                    value={userForm.role}
+                    onChange={(e) =>
+                      setUserForm((prev) => ({ ...prev, role: e.target.value }))
+                    }
+                    style={inputStyle}
+                    disabled={!canManageUsers}
+                  >
+                    <option value="admin">admin</option>
+                    <option value="editor">editor</option>
+                    <option value="viewer">viewer</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={labelStyle}>啟用狀態</label>
+                  <select
+                    value={userForm.active ? "true" : "false"}
+                    onChange={(e) =>
+                      setUserForm((prev) => ({
+                        ...prev,
+                        active: e.target.value === "true",
+                      }))
+                    }
+                    style={inputStyle}
+                    disabled={!canManageUsers}
+                  >
+                    <option value="true">啟用</option>
+                    <option value="false">停用</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+                <button
+                  onClick={handleSaveUser}
+                  style={{
+                    ...primaryButtonStyle,
+                    opacity: canManageUsers && !userSaving ? 1 : 0.6,
+                    cursor: canManageUsers && !userSaving ? "pointer" : "not-allowed",
+                  }}
+                  disabled={!canManageUsers || userSaving}
+                >
+                  {userSaving ? "儲存中..." : editingUserEmail ? "更新人員" : "新增人員"}
+                </button>
+
+                <button
+                  onClick={resetUserForm}
+                  style={secondaryButtonStyle}
+                  disabled={!canManageUsers}
+                >
+                  清空表單
+                </button>
+              </div>
+
+              {!canManageUsers ? (
+                <div style={{ marginTop: 12, fontSize: 13, color: "#64748b" }}>
+                  只有 admin 可以維護系統使用者。
+                </div>
+              ) : null}
+            </div>
+
+            <div style={{ ...cardStyle, marginTop: 18 }}>
+              <h2 style={sectionTitleStyle}>目前系統使用者</h2>
+              <div style={{ color: "#64748b", marginBottom: 14 }}>
+                共 {usersList.length} 人。可以直接編輯、停用或刪除。
               </div>
 
               <div style={tableWrapStyle}>
-                <table style={tableStyle}>
+                <table style={{ ...tableStyle, minWidth: 900 }}>
                   <thead>
                     <tr>
-                      <th style={lightHeadStyle}>日期</th>
-                      <th style={lightHeadStyle}>營業員</th>
-                      {BUSINESS_TYPES.map((biz) => (
-                        <th key={biz} style={lightHeadStyle}>
-                          {biz}
-                        </th>
-                      ))}
-                      <th style={lightHeadStyle}>合計</th>
+                      <th style={lightHeadStyle}>姓名</th>
+                      <th style={lightHeadStyle}>Email</th>
+                      <th style={lightHeadStyle}>角色</th>
+                      <th style={lightHeadStyle}>狀態</th>
+                      <th style={lightHeadStyle}>操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {groupedReportRows.length ? (
-                      groupedReportRows.map((row, idx) => (
-                        <tr key={`${row.date}_${row.staff}_${idx}`}>
-                          <td style={tableCellStyle}>{row.date}</td>
-                          <td style={nameCellStyle}>{row.staff}</td>
-                          {BUSINESS_TYPES.map((biz) => (
-                            <td key={biz} style={tableCellStyle}>
-                              {row.values[biz] || 0}
-                            </td>
-                          ))}
-                          <td style={totalCellStyle}>{row.total}</td>
+                    {usersList.length ? (
+                      usersList.map((item) => (
+                        <tr key={item.id}>
+                          <td style={nameCellStyle}>{item.name || "—"}</td>
+                          <td style={{ ...tableCellStyle, textAlign: "left" }}>{item.email || item.id}</td>
+                          <td style={tableCellStyle}>
+                            <span style={roleBadgeStyle(item.role)}>{item.role || "viewer"}</span>
+                          </td>
+                          <td style={tableCellStyle}>
+                            <span style={statusBadgeStyle(item.active !== false)}>
+                              {item.active !== false ? "啟用" : "停用"}
+                            </span>
+                          </td>
+                          <td style={tableCellStyle}>
+                            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                              <button
+                                onClick={() => handleEditUser(item)}
+                                style={secondaryButtonStyle}
+                                disabled={!canManageUsers}
+                              >
+                                編輯
+                              </button>
+                              <button
+                                onClick={() => handleToggleUserActive(item)}
+                                style={tabButtonStyle}
+                                disabled={!canManageUsers}
+                              >
+                                {item.active !== false ? "停用" : "啟用"}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteUser(item.email || item.id)}
+                                style={dangerButtonStyle}
+                                disabled={!canManageUsers}
+                              >
+                                刪除
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td
-                          colSpan={BUSINESS_TYPES.length + 3}
-                          style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
-                        >
-                          目前沒有資料
+                        <td colSpan={5} style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}>
+                          目前沒有使用者資料
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
-
-              <div style={summaryGridStyle}>
-                <div style={summaryCardStyle}>
-                  <h3 style={summaryTitleStyle}>依營業員統計</h3>
-                  <ul style={listStyle}>
-                    {reportSummary.byStaff.map(([name, qty]) => (
-                      <li key={name} style={listItemStyle}>
-                        <span>{name}</span>
-                        <b>{qty}</b>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div style={summaryCardStyle}>
-                  <h3 style={summaryTitleStyle}>依業務別統計</h3>
-                  <ul style={listStyle}>
-                    {reportSummary.byBiz.map(([name, qty]) => (
-                      <li key={name} style={listItemStyle}>
-                        <span>{name}</span>
-                        <b>{qty}</b>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
             </div>
           </div>
-
-          <div>
-            <div style={cardStyle}>
-              <h2 style={sectionTitleStyle}>營業員維護</h2>
-
-              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                <input
-                  type="text"
-                  placeholder="新增營業員姓名"
-                  value={newStaffName}
-                  onChange={(e) => setNewStaffName(e.target.value)}
-                  style={{ ...inputStyle, flex: 1 }}
-                  disabled={!canManageStaff}
-                />
-                <button
-                  onClick={handleAddStaff}
-                  style={{
-                    ...primaryButtonStyle,
-                    opacity: canManageStaff ? 1 : 0.6,
-                    cursor: canManageStaff ? "pointer" : "not-allowed",
-                  }}
-                  disabled={!canManageStaff}
-                >
-                  新增
-                </button>
-              </div>
-
-              <div style={{ maxHeight: 360, overflowY: "auto" }}>
-                {staffOptions.map((staff) => (
-                  <div key={staff} style={staffRowStyle}>
-                    <span>{staff}</span>
-                    <button
-                      onClick={() => handleRemoveStaff(staff)}
-                      style={{
-                        ...dangerButtonStyle,
-                        opacity: canManageStaff ? 1 : 0.6,
-                        cursor: canManageStaff ? "pointer" : "not-allowed",
-                      }}
-                      disabled={!canManageStaff}
-                    >
-                      移除
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              {!canManageStaff && (
-                <div style={{ marginTop: 12, fontSize: 13, color: "#64748b" }}>
-                  只有 admin 可以維護營業員名單。
-                </div>
-              )}
-            </div>
-
-            <div style={{ ...cardStyle, marginTop: 18 }}>
-              <h2 style={sectionTitleStyle}>歷史日期回溯修改</h2>
-
-              <div style={{ color: "#64748b", marginBottom: 12, lineHeight: 1.7 }}>
-                直接選日期載入。選到已有資料的日期時，左邊矩陣會自動帶回，修改後再按儲存即可。
-              </div>
-
-              <div style={toolbarStyle}>
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  style={inputStyle}
-                />
-                <button onClick={() => handleLoadDate(date)} style={secondaryButtonStyle}>
-                  載入該日資料
-                </button>
-              </div>
-
-              <div style={{ fontSize: 14, color: "#334155", lineHeight: 1.9 }}>
-                <div>
-                  目前編輯日期：<b>{formatDate(date)}</b>
-                </div>
-                <div>
-                  已儲存歷史筆數：<b>{historyDates.length}</b> 天
-                </div>
-                <div>
-                  最早日期：
-                  <b>
-                    {historyDates.length
-                      ? formatDate(historyDates[historyDates.length - 1])
-                      : "—"}
-                  </b>
-                </div>
-                <div>
-                  最近日期：
-                  <b>{historyDates.length ? formatDate(historyDates[0]) : "—"}</b>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -929,6 +1293,18 @@ const mainGridStyle = {
   gap: 20,
 };
 
+const peopleGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: 20,
+};
+
+const formGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 14,
+};
+
 const cardStyle = {
   background: "#ffffff",
   border: "1px solid #e2e8f0",
@@ -958,6 +1334,21 @@ const inputStyle = {
   background: "#ffffff",
   fontSize: 14,
   color: "#0f172a",
+  width: "100%",
+};
+
+const labelStyle = {
+  display: "block",
+  fontSize: 13,
+  fontWeight: 700,
+  marginBottom: 6,
+  color: "#334155",
+};
+
+const hintStyle = {
+  marginTop: 6,
+  fontSize: 12,
+  color: "#64748b",
 };
 
 const tableWrapStyle = {
@@ -1130,3 +1521,25 @@ const activeTabButtonStyle = {
   color: "#ffffff",
   border: "1px solid #0f172a",
 };
+
+const roleBadgeStyle = (role) => ({
+  display: "inline-block",
+  padding: "4px 10px",
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 700,
+  background:
+    role === "admin" ? "#dbeafe" : role === "editor" ? "#dcfce7" : "#f1f5f9",
+  color:
+    role === "admin" ? "#1d4ed8" : role === "editor" ? "#15803d" : "#475569",
+});
+
+const statusBadgeStyle = (active) => ({
+  display: "inline-block",
+  padding: "4px 10px",
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 700,
+  background: active ? "#dcfce7" : "#fee2e2",
+  color: active ? "#15803d" : "#b91c1c",
+});
