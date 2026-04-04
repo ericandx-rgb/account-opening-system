@@ -8,6 +8,7 @@ import {
   serverTimestamp,
   setDoc,
   deleteDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { auth, db, provider } from "./firebase";
 
@@ -217,11 +218,119 @@ function sortUsers(users) {
   });
 }
 
+function isIsoDateKey(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+}
+
+function normalizeImportedMatrix(rawMatrix, staffList) {
+  const base = createEmptyMatrix(staffList);
+
+  if (!rawMatrix || typeof rawMatrix !== "object") return base;
+
+  Object.keys(rawMatrix).forEach((staff) => {
+    const staffRow = rawMatrix[staff];
+    if (!staffRow || typeof staffRow !== "object") return;
+
+    if (!base[staff]) {
+      base[staff] = {};
+      BUSINESS_TYPES.forEach((biz) => {
+        base[staff][biz] = "";
+      });
+    }
+
+    BUSINESS_TYPES.forEach((biz) => {
+      const value = safeNumber(staffRow[biz]);
+      base[staff][biz] = value > 0 ? value : "";
+    });
+  });
+
+  return base;
+}
+
+function rowsArrayToMatrix(rows) {
+  const matrix = {};
+
+  (rows || []).forEach((item) => {
+    const staff = String(item?.staff || "").trim();
+    if (!staff) return;
+
+    if (!matrix[staff]) {
+      matrix[staff] = {};
+    }
+
+    const values = item?.values && typeof item.values === "object" ? item.values : {};
+
+    BUSINESS_TYPES.forEach((biz) => {
+      const value = safeNumber(values[biz]);
+      matrix[staff][biz] = value;
+    });
+  });
+
+  return matrix;
+}
+
+function extractImportPayload(rawJson) {
+  if (!rawJson) return {};
+
+  if (typeof rawJson === "object" && !Array.isArray(rawJson)) {
+    const directDateKeys = Object.keys(rawJson).filter(isIsoDateKey);
+    if (directDateKeys.length) {
+      const output = {};
+      directDateKeys.forEach((date) => {
+        output[date] = rawJson[date];
+      });
+      return output;
+    }
+
+    if (rawJson.data && typeof rawJson.data === "object") {
+      const nestedDateKeys = Object.keys(rawJson.data).filter(isIsoDateKey);
+      if (nestedDateKeys.length) {
+        const output = {};
+        nestedDateKeys.forEach((date) => {
+          output[date] = rawJson.data[date];
+        });
+        return output;
+      }
+    }
+
+    if (Array.isArray(rawJson.records)) {
+      const output = {};
+      rawJson.records.forEach((item) => {
+        if (item?.date && isIsoDateKey(item.date)) {
+          if (Array.isArray(item.rows)) {
+            output[item.date] = rowsArrayToMatrix(item.rows);
+          } else {
+            output[item.date] = item.data || item.matrix || {};
+          }
+        }
+      });
+      return output;
+    }
+  }
+
+  if (Array.isArray(rawJson)) {
+    const output = {};
+    rawJson.forEach((item) => {
+      if (item?.date && isIsoDateKey(item.date)) {
+        if (Array.isArray(item.rows)) {
+          output[item.date] = rowsArrayToMatrix(item.rows);
+        } else {
+          output[item.date] = item.data || item.matrix || {};
+        }
+      }
+    });
+    return output;
+  }
+
+  return {};
+}
+
 export default function App() {
   const [firebaseReady, setFirebaseReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshingPeoplePage, setRefreshingPeoplePage] = useState(false);
+  const [bulkImporting, setBulkImporting] = useState(false);
 
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
@@ -683,6 +792,83 @@ export default function App() {
     } catch (error) {
       console.error(error);
       alert("移除營業員失敗");
+    }
+  };
+
+  const handleImportPreviewJson = async () => {
+    if (!canManageUsers) return;
+
+    const confirmed = window.confirm(
+      "這會把 public/import-preview.json 的歷史資料正式寫入 Firestore。\n\n同日期若已存在資料，會以匯入內容覆蓋更新。確定要繼續嗎？"
+    );
+    if (!confirmed) return;
+
+    setBulkImporting(true);
+
+    try {
+      const res = await fetch("/import-preview.json", { cache: "no-store" });
+      if (!res.ok) {
+        throw new Error(`讀取 import-preview.json 失敗：HTTP ${res.status}`);
+      }
+
+      const rawJson = await res.json();
+      const importMap = extractImportPayload(rawJson);
+      const importDates = Object.keys(importMap).filter(isIsoDateKey).sort();
+
+      if (!importDates.length) {
+        throw new Error("import-preview.json 內沒有可匯入的日期資料");
+      }
+
+      const BATCH_LIMIT = 400;
+      let totalWritten = 0;
+
+      for (let i = 0; i < importDates.length; i += BATCH_LIMIT) {
+        const chunk = importDates.slice(i, i + BATCH_LIMIT);
+        const batch = writeBatch(db);
+
+        chunk.forEach((dateKey) => {
+          const normalizedMatrix = normalizeImportedMatrix(
+            importMap[dateKey],
+            staffOptions
+          );
+
+          batch.set(
+            doc(db, DAILY_RECORDS_COLLECTION, dateKey),
+            {
+              date: dateKey,
+              data: normalizedMatrix,
+              updatedBy: user?.email || "",
+              updatedAt: serverTimestamp(),
+              importedBy: user?.email || "",
+              importedAt: serverTimestamp(),
+              source: "import-preview.json",
+            },
+            { merge: true }
+          );
+
+          totalWritten += 1;
+        });
+
+        await batch.commit();
+      }
+
+      const recordsSnap = await getDocs(collection(db, DAILY_RECORDS_COLLECTION));
+      const loadedData = {};
+      recordsSnap.forEach((recordDoc) => {
+        const payload = recordDoc.data();
+        loadedData[recordDoc.id] = ensureMatrixShape(payload.data || {}, staffOptions);
+      });
+
+      setAllData(loadedData);
+      setMatrix(ensureMatrixShape(loadedData[date] || {}, staffOptions));
+      setLastClearedMatrix(null);
+
+      alert(`正式匯入完成，共寫入 ${totalWritten} 天資料。`);
+    } catch (error) {
+      console.error(error);
+      alert(`正式匯入失敗：${error.message || "未知錯誤"}`);
+    } finally {
+      setBulkImporting(false);
     }
   };
 
@@ -1517,6 +1703,31 @@ export default function App() {
                   清空表單
                 </button>
               </div>
+            </div>
+
+            <div style={{ ...cardStyle, marginTop: 18 }}>
+              <h2 style={sectionTitleStyle}>歷史資料正式匯入</h2>
+              <div style={{ color: "#64748b", marginBottom: 14, lineHeight: 1.8 }}>
+                來源檔案：public/import-preview.json
+                <br />
+                寫入位置：Firestore / daily_records
+                <br />
+                支援目前 Google Sheet Apps Script v5 輸出的 rows 格式。
+                <br />
+                同日期若已存在資料，會以匯入內容覆蓋更新。
+              </div>
+
+              <button
+                onClick={handleImportPreviewJson}
+                style={{
+                  ...successButtonStyle,
+                  opacity: bulkImporting ? 0.6 : 1,
+                  cursor: bulkImporting ? "not-allowed" : "pointer",
+                }}
+                disabled={bulkImporting}
+              >
+                {bulkImporting ? "正式匯入中..." : "正式匯入 import-preview.json"}
+              </button>
             </div>
 
             <div style={{ ...cardStyle, marginTop: 18 }}>
