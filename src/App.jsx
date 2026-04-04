@@ -50,34 +50,7 @@ const APP_META_COLLECTION = "app_meta";
 const DAILY_RECORDS_COLLECTION = "daily_records";
 const USERS_COLLECTION = "users";
 const ACCESS_REQUESTS_COLLECTION = "access_requests";
-const VERSION = "v2026.04.04-5";
-
-const TAIPEI_HEADQUARTERS_VIEWERS = [
-  { name: "秀芬", email: "b02008@goodfinance.com" },
-  { name: "淑惠", email: "b02007@goodfinance.com" },
-  { name: "大賢", email: "b02009@goodfinance.com" },
-  { name: "佳靜", email: "b02077@goodfinance.com" },
-  { name: "雅芬", email: "b02068@goodfinance.com" },
-  { name: "芬芳", email: "b02028@goodfinance.com" },
-  { name: "小包", email: "b02014@goodfinance.com" },
-  { name: "嘉貞", email: "joanna.hung@goodfinance.com" },
-  { name: "君白", email: "b02088@goodfinance.com" },
-  { name: "志鈞", email: "b02090@goodfinance.com" },
-  { name: "安萍", email: "b02095@goodfinance.com" },
-  { name: "明吟", email: "b02092@goodfinance.com" },
-  { name: "瑜珮", email: "b02081@goodfinance.com" },
-  { name: "郁婷", email: "b02017@goodfinance.com" },
-  { name: "裕蓁", email: "b02052@goodfinance.com" },
-  { name: "佳倫", email: "ruru.lo@goodfinance.com" },
-  { name: "先慶", email: "b02038@goodfinance.com" },
-  { name: "有財", email: "ytlo@goodfinance.com" },
-  { name: "建達", email: "jianda@goodfinance.com" },
-  { name: "子葶", email: "claire.tseng@goodfinance.com" },
-  { name: "富良", email: "flw@goodfinance.com" },
-  { name: "運宜", email: "emily.jin@goodfinance.com" },
-  { name: "Roger", email: "roger@goodfinance.com" },
-  { name: "Hank", email: "hank@goodfinance.com" },
-];
+const VERSION = "v2026.04.04-6";
 
 const getToday = () => new Date().toISOString().slice(0, 10);
 
@@ -131,6 +104,10 @@ function ensureMatrixShape(matrix, staffList) {
     });
   });
   return base;
+}
+
+function cloneMatrix(matrix) {
+  return JSON.parse(JSON.stringify(matrix || {}));
 }
 
 function safeNumber(v) {
@@ -244,6 +221,8 @@ export default function App() {
   const [firebaseReady, setFirebaseReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [refreshingPeoplePage, setRefreshingPeoplePage] = useState(false);
+
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [authError, setAuthError] = useState("");
@@ -257,6 +236,8 @@ export default function App() {
   const [date, setDate] = useState(getToday());
   const [matrix, setMatrix] = useState(createEmptyMatrix(DEFAULT_STAFF));
   const [allData, setAllData] = useState({});
+  const [lastClearedMatrix, setLastClearedMatrix] = useState(null);
+
   const [newStaffName, setNewStaffName] = useState("");
   const [reportType, setReportType] = useState("daily");
   const [reportDate, setReportDate] = useState(getToday());
@@ -272,7 +253,6 @@ export default function App() {
     active: true,
   });
   const [userSaving, setUserSaving] = useState(false);
-  const [bulkImporting, setBulkImporting] = useState(false);
   const [editingUserEmail, setEditingUserEmail] = useState("");
 
   const role = userProfile?.role || "viewer";
@@ -280,7 +260,6 @@ export default function App() {
   const canManageStaff = role === "admin";
   const canManageUsers = role === "admin";
   const canSeePeoplePage = role === "admin";
-  const isAggregateReport = reportType === "weekly" || reportType === "monthly" || reportType === "yearly";
 
   const enterRequestFlow = (firebaseUser) => {
     setAccessRequestNotice("");
@@ -295,6 +274,15 @@ export default function App() {
     setFirebaseReady(true);
   };
 
+  const loadUsersList = async () => {
+    const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
+    const loadedUsers = [];
+    usersSnap.forEach((item) => {
+      loadedUsers.push({ id: item.id, ...item.data() });
+    });
+    setUsersList(sortUsers(loadedUsers));
+  };
+
   const loadAccessRequests = async () => {
     const requestsSnap = await getDocs(collection(db, ACCESS_REQUESTS_COLLECTION));
     const loaded = [];
@@ -307,6 +295,10 @@ export default function App() {
       return bTime - aTime;
     });
     setAccessRequests(loaded);
+  };
+
+  const refreshPeopleManagementData = async () => {
+    await Promise.all([loadUsersList(), loadAccessRequests()]);
   };
 
   const loadAllAppData = async (firebaseUser) => {
@@ -377,18 +369,14 @@ export default function App() {
       loadedData[recordDoc.id] = ensureMatrixShape(payload.data || {}, dbStaff);
     });
 
-    const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-    const loadedUsers = [];
-    usersSnap.forEach((item) => {
-      loadedUsers.push({ id: item.id, ...item.data() });
-    });
-
     setUser(firebaseUser);
     setUserProfile({ email, ...profile });
     setStaffOptions(dbStaff);
     setAllData(loadedData);
     setMatrix(ensureMatrixShape(loadedData[date] || {}, dbStaff));
-    setUsersList(sortUsers(loadedUsers));
+    setLastClearedMatrix(null);
+
+    await loadUsersList();
 
     if ((profile.role || "") === "admin") {
       await loadAccessRequests();
@@ -414,6 +402,7 @@ export default function App() {
         setPendingAuthUser(null);
         setStaffOptions(DEFAULT_STAFF);
         setMatrix(createEmptyMatrix(DEFAULT_STAFF));
+        setLastClearedMatrix(null);
         setActivePage("opening");
         setFirebaseReady(true);
         setLoading(false);
@@ -436,6 +425,7 @@ export default function App() {
 
   useEffect(() => {
     setMatrix(ensureMatrixShape(allData[date] || {}, staffOptions));
+    setLastClearedMatrix(null);
   }, [date, allData, staffOptions]);
 
   useEffect(() => {
@@ -500,14 +490,7 @@ export default function App() {
       });
 
       await deleteDoc(doc(db, ACCESS_REQUESTS_COLLECTION, normalizedEmail));
-
-      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      const loadedUsers = [];
-      usersSnap.forEach((item) => {
-        loadedUsers.push({ id: item.id, ...item.data() });
-      });
-      setUsersList(sortUsers(loadedUsers));
-      await loadAccessRequests();
+      await refreshPeopleManagementData();
       alert(`已核准 ${requestItem.name || normalizedEmail} 為 ${assignedRole}`);
     } catch (error) {
       console.error(error);
@@ -533,6 +516,20 @@ export default function App() {
     }
   };
 
+  const handleRefreshPeoplePage = async () => {
+    if (!canManageUsers) return;
+    setRefreshingPeoplePage(true);
+    try {
+      setActivePage("people");
+      await refreshPeopleManagementData();
+    } catch (error) {
+      console.error(error);
+      alert("更新失敗，請稍後再試");
+    } finally {
+      setRefreshingPeoplePage(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
     setAuthError("");
     try {
@@ -550,6 +547,7 @@ export default function App() {
 
   const handleChange = (staff, biz, value) => {
     if (!canInputDaily) return;
+    setLastClearedMatrix(null);
     const clean = value === "" ? "" : String(Math.max(0, Number(value) || 0));
     setMatrix((prev) => ({
       ...prev,
@@ -558,6 +556,18 @@ export default function App() {
         [biz]: clean,
       },
     }));
+  };
+
+  const handleClearMatrix = () => {
+    if (!canInputDaily) return;
+    setLastClearedMatrix(cloneMatrix(matrix));
+    setMatrix(createEmptyMatrix(staffOptions));
+  };
+
+  const handleRestoreMatrix = () => {
+    if (!canInputDaily || !lastClearedMatrix) return;
+    setMatrix(ensureMatrixShape(cloneMatrix(lastClearedMatrix), staffOptions));
+    setLastClearedMatrix(null);
   };
 
   const handleSave = async () => {
@@ -577,6 +587,7 @@ export default function App() {
           delete next[date];
           return next;
         });
+        setLastClearedMatrix(null);
         alert("當日資料為空，已清除該日紀錄");
         return;
       }
@@ -593,6 +604,7 @@ export default function App() {
         [date]: normalized,
       }));
 
+      setLastClearedMatrix(null);
       alert("已儲存，可多人同步更新");
     } catch (error) {
       console.error(error);
@@ -694,43 +706,6 @@ export default function App() {
       role: item.role || "editor",
       active: item.active !== false,
     });
-  };
-
-  const handleBulkImportTaipeiViewers = async () => {
-    if (!canManageUsers) return;
-
-    const confirmed = window.confirm(
-      "確定要匯入台北總公司 viewer 名單嗎？已存在者會覆蓋為 viewer，未存在者會新增。"
-    );
-    if (!confirmed) return;
-
-    setBulkImporting(true);
-    try {
-      for (const item of TAIPEI_HEADQUARTERS_VIEWERS) {
-        const normalizedEmail = normalizeEmail(item.email);
-        await setDoc(doc(db, USERS_COLLECTION, normalizedEmail), {
-          email: normalizedEmail,
-          name: item.name,
-          role: "viewer",
-          active: true,
-          updatedBy: user?.email || "",
-          updatedAt: serverTimestamp(),
-        });
-      }
-
-      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      const loadedUsers = [];
-      usersSnap.forEach((item) => {
-        loadedUsers.push({ id: item.id, ...item.data() });
-      });
-      setUsersList(sortUsers(loadedUsers));
-      alert("台北總公司 viewer 名單已匯入完成");
-    } catch (error) {
-      console.error(error);
-      alert("批次匯入 viewer 名單失敗");
-    } finally {
-      setBulkImporting(false);
-    }
   };
 
   const handleSaveUser = async () => {
@@ -1074,35 +1049,40 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-          <button
-            onClick={() => setActivePage("opening")}
-            style={activePage === "opening" ? activeTabButtonStyle : tabButtonStyle}
-          >
-            開戶資料與報表
-          </button>
-          {canSeePeoplePage ? (
+        <div style={pageNavBarStyle}>
+          <div style={{ display: "flex", gap: 8 }}>
             <button
-              onClick={() => setActivePage("people")}
-              style={activePage === "people" ? activeTabButtonStyle : tabButtonStyle}
+              onClick={() => setActivePage("opening")}
+              style={activePage === "opening" ? activeTabButtonStyle : tabButtonStyle}
             >
-              人員管理頁
+              開戶資料與報表
             </button>
-          ) : null}
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            {canSeePeoplePage ? (
+              <button
+                onClick={() => setActivePage("people")}
+                style={activePage === "people" ? activeTabButtonStyle : tabButtonStyle}
+              >
+                人員管理頁
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {activePage === "opening" ? (
           <div style={mainGridStyle}>
             <div>
               <div style={cardStyle}>
-                <h2 style={sectionTitleStyle}>每日開戶數據輸入</h2>
+                <h2 style={sectionTitleStyle}>每日開戶數據</h2>
 
                 <div style={toolbarStyle}>
                   <input
                     type="date"
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
-                    style={inputStyle}
+                    style={dateInputStyle}
                   />
 
                   <button
@@ -1116,6 +1096,28 @@ export default function App() {
                   >
                     {saving ? "儲存中..." : "儲存當日資料"}
                   </button>
+
+                  {canInputDaily ? (
+                    <>
+                      <button
+                        onClick={handleClearMatrix}
+                        style={warningButtonStyle}
+                      >
+                        清空
+                      </button>
+                      <button
+                        onClick={handleRestoreMatrix}
+                        style={{
+                          ...restoreButtonStyle,
+                          opacity: lastClearedMatrix ? 1 : 0.5,
+                          cursor: lastClearedMatrix ? "pointer" : "not-allowed",
+                        }}
+                        disabled={!lastClearedMatrix}
+                      >
+                        還原
+                      </button>
+                    </>
+                  ) : null}
 
                   <div style={{ fontSize: 15, color: "#334155" }}>
                     當日合計：<b>{currentDayTotal}</b>
@@ -1222,7 +1224,7 @@ export default function App() {
                       type="date"
                       value={reportDate}
                       onChange={(e) => setReportDate(e.target.value)}
-                      style={inputStyle}
+                      style={dateInputStyle}
                     />
                   )}
                   {reportType === "monthly" && (
@@ -1230,7 +1232,7 @@ export default function App() {
                       type="month"
                       value={reportMonth}
                       onChange={(e) => setReportMonth(e.target.value)}
-                      style={inputStyle}
+                      style={dateInputStyle}
                     />
                   )}
                   {reportType === "yearly" && (
@@ -1238,7 +1240,7 @@ export default function App() {
                       type="number"
                       value={reportYear}
                       onChange={(e) => setReportYear(e.target.value)}
-                      style={{ ...inputStyle, width: 120 }}
+                      style={{ ...dateInputStyle, width: 120 }}
                     />
                   )}
                 </div>
@@ -1389,7 +1391,7 @@ export default function App() {
                     type="date"
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
-                    style={inputStyle}
+                    style={dateInputStyle}
                   />
                   <button onClick={() => handleLoadDate(date)} style={secondaryButtonStyle}>
                     載入該日資料
@@ -1514,25 +1516,29 @@ export default function App() {
                 >
                   清空表單
                 </button>
-
-                <button
-                  onClick={handleBulkImportTaipeiViewers}
-                  style={{
-                    ...successButtonStyle,
-                    opacity: canManageUsers && !bulkImporting ? 1 : 0.6,
-                    cursor: canManageUsers && !bulkImporting ? "pointer" : "not-allowed",
-                  }}
-                  disabled={!canManageUsers || bulkImporting}
-                >
-                  {bulkImporting ? "匯入中..." : "匯入台北總公司 viewer 名單"}
-                </button>
               </div>
             </div>
 
             <div style={{ ...cardStyle, marginTop: 18 }}>
-              <h2 style={sectionTitleStyle}>待審核申請</h2>
-              <div style={{ color: "#64748b", marginBottom: 14 }}>
-                選擇請求者要開通的身分後，按下確認，即會匯入目前系統使用者列表。
+              <div style={sectionHeaderRowStyle}>
+                <div>
+                  <h2 style={sectionTitleStyle}>待審核申請</h2>
+                  <div style={{ color: "#64748b", marginTop: -4 }}>
+                    選擇請求者要開通的身分後，按下確認，即會匯入目前系統使用者列表。
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleRefreshPeoplePage}
+                  style={{
+                    ...successButtonStyle,
+                    opacity: refreshingPeoplePage ? 0.7 : 1,
+                    cursor: refreshingPeoplePage ? "not-allowed" : "pointer",
+                  }}
+                  disabled={refreshingPeoplePage}
+                >
+                  {refreshingPeoplePage ? "更新中..." : "更新"}
+                </button>
               </div>
 
               <div style={tableWrapStyle}>
@@ -1735,6 +1741,22 @@ const headerStyle = {
   marginBottom: 20,
 };
 
+const pageNavBarStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  marginBottom: 20,
+};
+
+const sectionHeaderRowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 16,
+  marginBottom: 14,
+};
+
 const userBoxStyle = {
   background: "#ffffff",
   border: "1px solid #e2e8f0",
@@ -1792,6 +1814,16 @@ const inputStyle = {
   fontSize: 14,
   color: "#0f172a",
   width: "100%",
+};
+
+const dateInputStyle = {
+  border: "1px solid #cbd5e1",
+  borderRadius: 8,
+  padding: "9px 12px",
+  background: "#ffffff",
+  fontSize: 14,
+  color: "#0f172a",
+  width: 160,
 };
 
 const labelStyle = {
@@ -1968,6 +2000,20 @@ const successButtonStyle = {
   background: "#0f766e",
   color: "#ffffff",
   border: "1px solid #0f766e",
+};
+
+const warningButtonStyle = {
+  ...baseButtonStyle,
+  background: "#f59e0b",
+  color: "#ffffff",
+  border: "1px solid #f59e0b",
+};
+
+const restoreButtonStyle = {
+  ...baseButtonStyle,
+  background: "#7c3aed",
+  color: "#ffffff",
+  border: "1px solid #7c3aed",
 };
 
 const dangerButtonStyle = {
