@@ -50,6 +50,33 @@ const APP_META_COLLECTION = "app_meta";
 const DAILY_RECORDS_COLLECTION = "daily_records";
 const USERS_COLLECTION = "users";
 
+const TAIPEI_HEADQUARTERS_VIEWERS = [
+  { name: "秀芬", email: "b02008@goodfinance.com" },
+  { name: "淑惠", email: "b02007@goodfinance.com" },
+  { name: "大賢", email: "b02009@goodfinance.com" },
+  { name: "佳靜", email: "b02077@goodfinance.com" },
+  { name: "雅芬", email: "b02068@goodfinance.com" },
+  { name: "芬芳", email: "b02028@goodfinance.com" },
+  { name: "小包", email: "b02014@goodfinance.com" },
+  { name: "嘉貞", email: "joanna.hung@goodfinance.com" },
+  { name: "君白", email: "b02088@goodfinance.com" },
+  { name: "志鈞", email: "b02090@goodfinance.com" },
+  { name: "安萍", email: "b02095@goodfinance.com" },
+  { name: "明吟", email: "b02092@goodfinance.com" },
+  { name: "瑜珮", email: "b02081@goodfinance.com" },
+  { name: "郁婷", email: "b02017@goodfinance.com" },
+  { name: "裕蓁", email: "b02052@goodfinance.com" },
+  { name: "佳倫", email: "ruru.lo@goodfinance.com" },
+  { name: "先慶", email: "b02038@goodfinance.com" },
+  { name: "有財", email: "ytlo@goodfinance.com" },
+  { name: "建達", email: "jianda@goodfinance.com" },
+  { name: "子葶", email: "claire.tseng@goodfinance.com" },
+  { name: "富良", email: "flw@goodfinance.com" },
+  { name: "運宜", email: "emily.jin@goodfinance.com" },
+  { name: "Roger", email: "roger@goodfinance.com" },
+  { name: "Hank", email: "hank@goodfinance.com" },
+];
+
 const getToday = () => new Date().toISOString().slice(0, 10);
 
 function formatDate(dateStr) {
@@ -219,6 +246,7 @@ export default function App() {
     active: true,
   });
   const [userSaving, setUserSaving] = useState(false);
+  const [bulkImporting, setBulkImporting] = useState(false);
   const [editingUserEmail, setEditingUserEmail] = useState("");
 
   const role = userProfile?.role || "viewer";
@@ -238,6 +266,12 @@ export default function App() {
     }
 
     const profile = userSnap.data();
+
+    if (!["admin", "editor", "viewer"].includes(profile.role)) {
+      setAuthError("此帳號未被授予有效系統角色，無法登入。");
+      await signOut(auth);
+      return;
+    }
 
     if (profile.active === false) {
       setAuthError("此帳號已停用。");
@@ -478,6 +512,43 @@ export default function App() {
     });
   };
 
+  const handleBulkImportTaipeiViewers = async () => {
+    if (!canManageUsers) return;
+
+    const confirmed = window.confirm(
+      "確定要匯入台北總公司 viewer 名單嗎？已存在者會覆蓋為 viewer，未存在者會新增。"
+    );
+    if (!confirmed) return;
+
+    setBulkImporting(true);
+    try {
+      for (const item of TAIPEI_HEADQUARTERS_VIEWERS) {
+        const normalizedEmail = normalizeEmail(item.email);
+        await setDoc(doc(db, USERS_COLLECTION, normalizedEmail), {
+          email: normalizedEmail,
+          name: item.name,
+          role: "viewer",
+          active: true,
+          updatedBy: user?.email || "",
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
+      const loadedUsers = [];
+      usersSnap.forEach((item) => {
+        loadedUsers.push({ id: item.id, ...item.data() });
+      });
+      setUsersList(sortUsers(loadedUsers));
+      alert("台北總公司 viewer 名單已匯入完成");
+    } catch (error) {
+      console.error(error);
+      alert("批次匯入 viewer 名單失敗");
+    } finally {
+      setBulkImporting(false);
+    }
+  };
+
   const handleSaveUser = async () => {
     if (!canManageUsers) return;
 
@@ -704,21 +775,18 @@ export default function App() {
     return (
       <div style={pageStyle}>
         <div style={{ ...cardStyle, maxWidth: 520, margin: "80px auto" }}>
-          <h1 style={{ marginTop: 0, marginBottom: 12, fontSize: 32 }}>開戶統計系統</h1>
-          <p style={{ color: "#64748b", lineHeight: 1.8, marginBottom: 16 }}>
-            請使用公司 Google 帳號登入。登入後系統會自動檢查 Firestore users 白名單與角色權限。
-          </p>
+          <h1 style={{ marginTop: 0, marginBottom: 12, fontSize: 32 }}>
+            美好證券台北總公司開戶統計系統
+          </h1>
 
           {authError ? <div style={errorBoxStyle}>{authError}</div> : null}
 
           <button onClick={handleGoogleLogin} style={primaryButtonStyle}>
             使用 Google 登入
           </button>
-
-          <div style={{ marginTop: 16, fontSize: 13, color: "#64748b" }}>
-            提醒：你必須先在 Firestore 建立 users 集合，並新增你的 email 文件，否則會被擋下。
-          </div>
         </div>
+
+        <div style={versionStyle}>v2026.04.04-1</div>
       </div>
     );
   }
@@ -728,7 +796,9 @@ export default function App() {
       <div style={containerStyle}>
         <div style={headerStyle}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>開戶統計系統</h1>
+            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>
+              美好證券台北總公司開戶統計系統
+            </h1>
             <div style={{ color: "#475569", marginTop: 8, fontSize: 14 }}>
               已支援：Google 登入、白名單權限、多人同步、匯出 Excel、日／週／月／年報表、可回溯修改、彈性增減營業員
             </div>
@@ -754,6 +824,7 @@ export default function App() {
           >
             開戶資料與報表
           </button>
+
           {canSeePeoplePage ? (
             <button
               onClick={() => setActivePage("people")}
@@ -1181,6 +1252,18 @@ export default function App() {
                 >
                   清空表單
                 </button>
+
+                <button
+                  onClick={handleBulkImportTaipeiViewers}
+                  style={{
+                    ...successButtonStyle,
+                    opacity: canManageUsers && !bulkImporting ? 1 : 0.6,
+                    cursor: canManageUsers && !bulkImporting ? "pointer" : "not-allowed",
+                  }}
+                  disabled={!canManageUsers || bulkImporting}
+                >
+                  {bulkImporting ? "匯入中..." : "匯入台北總公司 viewer 名單"}
+                </button>
               </div>
             </div>
 
@@ -1265,6 +1348,8 @@ export default function App() {
           </div>
         ) : null}
       </div>
+
+      <div style={versionStyle}>v2026.04.04-1</div>
     </div>
   );
 }
@@ -1556,3 +1641,13 @@ const statusBadgeStyle = (active) => ({
   background: active ? "#dcfce7" : "#fee2e2",
   color: active ? "#15803d" : "#b91c1c",
 });
+
+const versionStyle = {
+  position: "fixed",
+  right: 16,
+  bottom: 10,
+  fontSize: 12,
+  color: "#94a3b8",
+  opacity: 0.85,
+  pointerEvents: "none",
+};
