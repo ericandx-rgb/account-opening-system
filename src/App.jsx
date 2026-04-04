@@ -49,6 +49,7 @@ const STAFF_META_DOC = "staff_list";
 const APP_META_COLLECTION = "app_meta";
 const DAILY_RECORDS_COLLECTION = "daily_records";
 const USERS_COLLECTION = "users";
+const ACCESS_REQUESTS_COLLECTION = "access_requests";
 
 const TAIPEI_HEADQUARTERS_VIEWERS = [
   { name: "秀芬", email: "b02008@goodfinance.com" },
@@ -226,6 +227,9 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [authError, setAuthError] = useState("");
+  const [pendingAuthUser, setPendingAuthUser] = useState(null);
+  const [requestForm, setRequestForm] = useState({ name: "", email: "" });
+  const [requestSubmitting, setRequestSubmitting] = useState(false);
   const [activePage, setActivePage] = useState("opening");
 
   const [staffOptions, setStaffOptions] = useState(DEFAULT_STAFF);
@@ -239,6 +243,7 @@ export default function App() {
   const [reportYear, setReportYear] = useState(getToday().slice(0, 4));
 
   const [usersList, setUsersList] = useState([]);
+  const [accessRequests, setAccessRequests] = useState([]);
   const [userForm, setUserForm] = useState({
     email: "",
     name: "",
@@ -255,12 +260,40 @@ export default function App() {
   const canManageUsers = role === "admin";
   const canSeePeoplePage = role === "admin";
 
+  const loadAccessRequests = async () => {
+    const requestsSnap = await getDocs(collection(db, ACCESS_REQUESTS_COLLECTION));
+    const loaded = [];
+    requestsSnap.forEach((item) => {
+      loaded.push({ id: item.id, ...item.data() });
+    });
+    loaded.sort((a, b) => {
+      const aTime = a.createdAt?.seconds || 0;
+      const bTime = b.createdAt?.seconds || 0;
+      return bTime - aTime;
+    });
+    setAccessRequests(loaded);
+  };
+
   const loadAllAppData = async (firebaseUser) => {
     const email = normalizeEmail(firebaseUser.email || "");
     const userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
 
     if (!userSnap.exists()) {
-      setAuthError("此帳號尚未加入系統白名單，請先請管理員建立 users 權限資料。");
+      const normalizedEmail = normalizeEmail(firebaseUser.email || "");
+      if (normalizedEmail.endsWith("@goodfinance.com")) {
+        setPendingAuthUser(firebaseUser);
+        setRequestForm({
+          name: firebaseUser.displayName || "",
+          email: normalizedEmail,
+        });
+        setUser(null);
+        setUserProfile(null);
+        setLoading(false);
+        setFirebaseReady(true);
+        return;
+      }
+
+      setAuthError("此帳號尚未加入系統白名單，且非公司網域帳號，無法申請系統權限。");
       await signOut(auth);
       return;
     }
@@ -304,6 +337,14 @@ export default function App() {
     setAllData(loadedData);
     setMatrix(ensureMatrixShape(loadedData[date] || {}, dbStaff));
     setUsersList(sortUsers(loadedUsers));
+
+    if ((profile.role || "") === "admin") {
+      await loadAccessRequests();
+    } else {
+      setAccessRequests([]);
+    }
+
+    setPendingAuthUser(null);
   };
 
   useEffect(() => {
@@ -316,6 +357,8 @@ export default function App() {
         setUserProfile(null);
         setAllData({});
         setUsersList([]);
+        setAccessRequests([]);
+        setPendingAuthUser(null);
         setStaffOptions(DEFAULT_STAFF);
         setMatrix(createEmptyMatrix(DEFAULT_STAFF));
         setActivePage("opening");
@@ -347,6 +390,91 @@ export default function App() {
       setActivePage("opening");
     }
   }, [canSeePeoplePage, activePage]);
+
+  const handleSubmitAccessRequest = async () => {
+    if (!pendingAuthUser) return;
+
+    const email = normalizeEmail(requestForm.email || pendingAuthUser.email || "");
+    const name = (requestForm.name || "").trim();
+
+    if (!email.endsWith("@goodfinance.com")) {
+      alert("僅限 @goodfinance.com 公司帳號提出申請");
+      return;
+    }
+    if (!name) {
+      alert("請輸入姓名");
+      return;
+    }
+
+    setRequestSubmitting(true);
+    try {
+      await setDoc(doc(db, ACCESS_REQUESTS_COLLECTION, email), {
+        email,
+        name,
+        status: "pending",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      alert("申請已送出，請等待 admin 審核權限後再登入。");
+      await signOut(auth);
+      setPendingAuthUser(null);
+      setRequestForm({ name: "", email: "" });
+    } catch (error) {
+      console.error(error);
+      alert("送出申請失敗，請稍後再試");
+    } finally {
+      setRequestSubmitting(false);
+    }
+  };
+
+  const handleApproveAccessRequest = async (requestItem, assignedRole) => {
+    if (!canManageUsers) return;
+    const normalizedEmail = normalizeEmail(requestItem.email || requestItem.id);
+    if (!normalizedEmail) return;
+
+    try {
+      await setDoc(doc(db, USERS_COLLECTION, normalizedEmail), {
+        email: normalizedEmail,
+        name: requestItem.name || "",
+        role: assignedRole,
+        active: true,
+        updatedBy: user?.email || "",
+        updatedAt: serverTimestamp(),
+      });
+
+      await deleteDoc(doc(db, ACCESS_REQUESTS_COLLECTION, normalizedEmail));
+
+      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
+      const loadedUsers = [];
+      usersSnap.forEach((item) => {
+        loadedUsers.push({ id: item.id, ...item.data() });
+      });
+      setUsersList(sortUsers(loadedUsers));
+      await loadAccessRequests();
+      alert(`已核准 ${requestItem.name || normalizedEmail} 為 ${assignedRole}`);
+    } catch (error) {
+      console.error(error);
+      alert("核准申請失敗");
+    }
+  };
+
+  const handleRejectAccessRequest = async (requestItem) => {
+    if (!canManageUsers) return;
+    const normalizedEmail = normalizeEmail(requestItem.email || requestItem.id);
+    if (!normalizedEmail) return;
+
+    const confirmed = window.confirm(`確定要拒絕 ${normalizedEmail} 的申請嗎？`);
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, ACCESS_REQUESTS_COLLECTION, normalizedEmail));
+      await loadAccessRequests();
+      alert("已拒絕並移除申請");
+    } catch (error) {
+      console.error(error);
+      alert("拒絕申請失敗");
+    }
+  };
 
   const handleGoogleLogin = async () => {
     setAuthError("");
@@ -779,14 +907,71 @@ export default function App() {
             美好證券台北總公司開戶統計系統
           </h1>
 
-          {authError ? <div style={errorBoxStyle}>{authError}</div> : null}
+          {pendingAuthUser ? (
+            <>
+              <div style={{ color: "#475569", marginBottom: 12, lineHeight: 1.8 }}>
+                你是公司網域帳號，但尚未建立系統權限。請先填寫資料送出申請，待 admin 審核後即可登入使用。
+              </div>
 
-          <button onClick={handleGoogleLogin} style={primaryButtonStyle}>
-            使用 Google 登入
-          </button>
+              <div style={{ display: "grid", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <label style={labelStyle}>姓名</label>
+                  <input
+                    type="text"
+                    value={requestForm.name}
+                    onChange={(e) =>
+                      setRequestForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                    style={inputStyle}
+                    placeholder="請輸入姓名"
+                  />
+                </div>
+
+                <div>
+                  <label style={labelStyle}>Email</label>
+                  <input
+                    type="email"
+                    value={requestForm.email}
+                    onChange={(e) =>
+                      setRequestForm((prev) => ({ ...prev, email: e.target.value }))
+                    }
+                    style={inputStyle}
+                    placeholder="請輸入公司 email"
+                    disabled
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  onClick={handleSubmitAccessRequest}
+                  style={{
+                    ...primaryButtonStyle,
+                    opacity: requestSubmitting ? 0.6 : 1,
+                    cursor: requestSubmitting ? "not-allowed" : "pointer",
+                  }}
+                  disabled={requestSubmitting}
+                >
+                  {requestSubmitting ? "送出中..." : "送出權限申請"}
+                </button>
+
+                <button onClick={handleLogout} style={secondaryButtonStyle}>
+                  取消並登出
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {authError ? <div style={errorBoxStyle}>{authError}</div> : null}
+
+              <button onClick={handleGoogleLogin} style={primaryButtonStyle}>
+                使用 Google 登入
+              </button>
+            </>
+          )}
         </div>
 
-        <div style={versionStyle}>v2026.04.04-1</div>
+        <div style={versionStyle}>v2026.04.04-2</div>
       </div>
     );
   }
@@ -1268,6 +1453,85 @@ export default function App() {
             </div>
 
             <div style={{ ...cardStyle, marginTop: 18 }}>
+              <h2 style={sectionTitleStyle}>待審核權限申請</h2>
+              <div style={{ color: "#64748b", marginBottom: 14 }}>
+                共 {accessRequests.length} 筆。僅 admin 可核准並指定角色。
+              </div>
+
+              <div style={tableWrapStyle}>
+                <table style={{ ...tableStyle, minWidth: 900 }}>
+                  <thead>
+                    <tr>
+                      <th style={lightHeadStyle}>姓名</th>
+                      <th style={lightHeadStyle}>Email</th>
+                      <th style={lightHeadStyle}>狀態</th>
+                      <th style={lightHeadStyle}>核准為</th>
+                      <th style={lightHeadStyle}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accessRequests.length ? (
+                      accessRequests.map((item) => (
+                        <tr key={item.id}>
+                          <td style={nameCellStyle}>{item.name || "—"}</td>
+                          <td style={{ ...tableCellStyle, textAlign: "left" }}>
+                            {item.email || item.id}
+                          </td>
+                          <td style={tableCellStyle}>
+                            <span style={statusBadgeStyle(true)}>待審核</span>
+                          </td>
+                          <td style={tableCellStyle}>
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 8,
+                                justifyContent: "center",
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              <button
+                                onClick={() => handleApproveAccessRequest(item, "viewer")}
+                                style={secondaryButtonStyle}
+                              >
+                                viewer
+                              </button>
+                              <button
+                                onClick={() => handleApproveAccessRequest(item, "editor")}
+                                style={tabButtonStyle}
+                              >
+                                editor
+                              </button>
+                              <button
+                                onClick={() => handleApproveAccessRequest(item, "admin")}
+                                style={primaryButtonStyle}
+                              >
+                                admin
+                              </button>
+                            </div>
+                          </td>
+                          <td style={tableCellStyle}>
+                            <button
+                              onClick={() => handleRejectAccessRequest(item)}
+                              style={dangerButtonStyle}
+                            >
+                              拒絕
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}>
+                          目前沒有待審核申請
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style={{ ...cardStyle, marginTop: 18 }}>
               <h2 style={sectionTitleStyle}>目前系統使用者</h2>
               <div style={{ color: "#64748b", marginBottom: 14 }}>
                 共 {usersList.length} 人。可以直接編輯、停用或刪除。
@@ -1349,7 +1613,7 @@ export default function App() {
         ) : null}
       </div>
 
-      <div style={versionStyle}>v2026.04.04-1</div>
+      <div style={versionStyle}>v2026.04.04-2</div>
     </div>
   );
 }
