@@ -227,6 +227,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [authError, setAuthError] = useState("");
+  const [accessRequestNotice, setAccessRequestNotice] = useState("");
   const [pendingAuthUser, setPendingAuthUser] = useState(null);
   const [requestForm, setRequestForm] = useState({ name: "", email: "" });
   const [requestSubmitting, setRequestSubmitting] = useState(false);
@@ -279,22 +280,16 @@ export default function App() {
     const userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
 
     if (!userSnap.exists()) {
-      const normalizedEmail = normalizeEmail(firebaseUser.email || "");
-      if (normalizedEmail.endsWith("@goodfinance.com")) {
-        setPendingAuthUser(firebaseUser);
-        setRequestForm({
-          name: firebaseUser.displayName || "",
-          email: normalizedEmail,
-        });
-        setUser(null);
-        setUserProfile(null);
-        setLoading(false);
-        setFirebaseReady(true);
-        return;
-      }
-
-      setAuthError("此帳號尚未加入系統白名單，且非公司網域帳號，無法申請系統權限。");
-      await signOut(auth);
+      setAccessRequestNotice("");
+      setPendingAuthUser(firebaseUser);
+      setRequestForm({
+        name: firebaseUser.displayName || "",
+        email: normalizeEmail(firebaseUser.email || ""),
+      });
+      setUser(null);
+      setUserProfile(null);
+      setLoading(false);
+      setFirebaseReady(true);
       return;
     }
 
@@ -337,13 +332,11 @@ export default function App() {
     setAllData(loadedData);
     setMatrix(ensureMatrixShape(loadedData[date] || {}, dbStaff));
     setUsersList(sortUsers(loadedUsers));
-
     if ((profile.role || "") === "admin") {
       await loadAccessRequests();
     } else {
       setAccessRequests([]);
     }
-
     setPendingAuthUser(null);
   };
 
@@ -397,8 +390,8 @@ export default function App() {
     const email = normalizeEmail(requestForm.email || pendingAuthUser.email || "");
     const name = (requestForm.name || "").trim();
 
-    if (!email.endsWith("@goodfinance.com")) {
-      alert("僅限 @goodfinance.com 公司帳號提出申請");
+    if (!email) {
+      alert("請輸入完整 email");
       return;
     }
     if (!name) {
@@ -415,7 +408,9 @@ export default function App() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      alert("申請已送出，請等待 admin 審核權限後再登入。");
+      setAccessRequestNotice(
+        "申請已送出。我們會在完成權限審核後第一時間開放存取，請稍候片刻，再回來登入即可。"
+      );
       await signOut(auth);
       setPendingAuthUser(null);
       setRequestForm({ name: "", email: "" });
@@ -903,16 +898,13 @@ export default function App() {
     return (
       <div style={pageStyle}>
         <div style={{ ...cardStyle, maxWidth: 520, margin: "80px auto" }}>
-          <h1 style={{ marginTop: 0, marginBottom: 12, fontSize: 32 }}>
-            美好證券台北總公司開戶統計系統
-          </h1>
+          <h1 style={{ marginTop: 0, marginBottom: 12, fontSize: 32 }}>美好證券台北總公司開戶統計系統</h1>
 
           {pendingAuthUser ? (
             <>
               <div style={{ color: "#475569", marginBottom: 12, lineHeight: 1.8 }}>
-                你是公司網域帳號，但尚未建立系統權限。請先填寫資料送出申請，待 admin 審核後即可登入使用。
+                目前尚未建立你的系統權限。請先填寫姓名與完整 email，送出後我們會盡快完成審核。
               </div>
-
               <div style={{ display: "grid", gap: 12, marginBottom: 12 }}>
                 <div>
                   <label style={labelStyle}>姓名</label>
@@ -926,7 +918,6 @@ export default function App() {
                     placeholder="請輸入姓名"
                   />
                 </div>
-
                 <div>
                   <label style={labelStyle}>Email</label>
                   <input
@@ -936,12 +927,10 @@ export default function App() {
                       setRequestForm((prev) => ({ ...prev, email: e.target.value }))
                     }
                     style={inputStyle}
-                    placeholder="請輸入公司 email"
-                    disabled
+                    placeholder="請輸入完整 email"
                   />
                 </div>
               </div>
-
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   onClick={handleSubmitAccessRequest}
@@ -952,26 +941,23 @@ export default function App() {
                   }}
                   disabled={requestSubmitting}
                 >
-                  {requestSubmitting ? "送出中..." : "送出權限申請"}
+                  {requestSubmitting ? "送出中..." : "送出"}
                 </button>
-
                 <button onClick={handleLogout} style={secondaryButtonStyle}>
-                  取消並登出
+                  返回登入頁
                 </button>
               </div>
             </>
           ) : (
             <>
               {authError ? <div style={errorBoxStyle}>{authError}</div> : null}
-
+              {accessRequestNotice ? <div style={successNoticeStyle}>{accessRequestNotice}</div> : null}
               <button onClick={handleGoogleLogin} style={primaryButtonStyle}>
                 使用 Google 登入
               </button>
             </>
           )}
         </div>
-
-        <div style={versionStyle}>v2026.04.04-2</div>
       </div>
     );
   }
@@ -981,9 +967,7 @@ export default function App() {
       <div style={containerStyle}>
         <div style={headerStyle}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>
-              美好證券台北總公司開戶統計系統
-            </h1>
+            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>美好證券台北總公司開戶統計系統</h1>
             <div style={{ color: "#475569", marginTop: 8, fontSize: 14 }}>
               已支援：Google 登入、白名單權限、多人同步、匯出 Excel、日／週／月／年報表、可回溯修改、彈性增減營業員
             </div>
@@ -1009,7 +993,6 @@ export default function App() {
           >
             開戶資料與報表
           </button>
-
           {canSeePeoplePage ? (
             <button
               onClick={() => setActivePage("people")}
@@ -1453,9 +1436,9 @@ export default function App() {
             </div>
 
             <div style={{ ...cardStyle, marginTop: 18 }}>
-              <h2 style={sectionTitleStyle}>待審核權限申請</h2>
+              <h2 style={sectionTitleStyle}>待審核申請</h2>
               <div style={{ color: "#64748b", marginBottom: 14 }}>
-                共 {accessRequests.length} 筆。僅 admin 可核准並指定角色。
+                選擇請求者要開通的身分後，按下確認，即會匯入目前系統使用者列表。
               </div>
 
               <div style={tableWrapStyle}>
@@ -1465,7 +1448,7 @@ export default function App() {
                       <th style={lightHeadStyle}>姓名</th>
                       <th style={lightHeadStyle}>Email</th>
                       <th style={lightHeadStyle}>狀態</th>
-                      <th style={lightHeadStyle}>核准為</th>
+                      <th style={lightHeadStyle}>身分</th>
                       <th style={lightHeadStyle}>操作</th>
                     </tr>
                   </thead>
@@ -1474,48 +1457,42 @@ export default function App() {
                       accessRequests.map((item) => (
                         <tr key={item.id}>
                           <td style={nameCellStyle}>{item.name || "—"}</td>
-                          <td style={{ ...tableCellStyle, textAlign: "left" }}>
-                            {item.email || item.id}
-                          </td>
+                          <td style={{ ...tableCellStyle, textAlign: "left" }}>{item.email || item.id}</td>
                           <td style={tableCellStyle}>
                             <span style={statusBadgeStyle(true)}>待審核</span>
                           </td>
                           <td style={tableCellStyle}>
-                            <div
-                              style={{
-                                display: "flex",
-                                gap: 8,
-                                justifyContent: "center",
-                                flexWrap: "wrap",
-                              }}
+                            <select
+                              value={item.selectedRole || "viewer"}
+                              onChange={(e) =>
+                                setAccessRequests((prev) =>
+                                  prev.map((req) =>
+                                    req.id === item.id ? { ...req, selectedRole: e.target.value } : req
+                                  )
+                                )
+                              }
+                              style={{ ...inputStyle, minWidth: 120 }}
                             >
-                              <button
-                                onClick={() => handleApproveAccessRequest(item, "viewer")}
-                                style={secondaryButtonStyle}
-                              >
-                                viewer
-                              </button>
-                              <button
-                                onClick={() => handleApproveAccessRequest(item, "editor")}
-                                style={tabButtonStyle}
-                              >
-                                editor
-                              </button>
-                              <button
-                                onClick={() => handleApproveAccessRequest(item, "admin")}
-                                style={primaryButtonStyle}
-                              >
-                                admin
-                              </button>
-                            </div>
+                              <option value="admin">admin</option>
+                              <option value="editor">editor</option>
+                              <option value="viewer">viewer</option>
+                            </select>
                           </td>
                           <td style={tableCellStyle}>
-                            <button
-                              onClick={() => handleRejectAccessRequest(item)}
-                              style={dangerButtonStyle}
-                            >
-                              拒絕
-                            </button>
+                            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                              <button
+                                onClick={() => handleApproveAccessRequest(item, item.selectedRole || "viewer")}
+                                style={primaryButtonStyle}
+                              >
+                                確認
+                              </button>
+                              <button
+                                onClick={() => handleRejectAccessRequest(item)}
+                                style={dangerButtonStyle}
+                              >
+                                拒絕
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -1612,8 +1589,6 @@ export default function App() {
           </div>
         ) : null}
       </div>
-
-      <div style={versionStyle}>v2026.04.04-2</div>
     </div>
   );
 }
@@ -1830,6 +1805,16 @@ const errorBoxStyle = {
   borderRadius: 10,
 };
 
+const successNoticeStyle = {
+  marginBottom: 12,
+  color: "#065f46",
+  background: "#ecfdf5",
+  border: "1px solid #a7f3d0",
+  padding: 12,
+  borderRadius: 10,
+  lineHeight: 1.7,
+};
+
 const baseButtonStyle = {
   padding: "10px 14px",
   borderRadius: 8,
@@ -1905,13 +1890,3 @@ const statusBadgeStyle = (active) => ({
   background: active ? "#dcfce7" : "#fee2e2",
   color: active ? "#15803d" : "#b91c1c",
 });
-
-const versionStyle = {
-  position: "fixed",
-  right: 16,
-  bottom: 10,
-  fontSize: 12,
-  color: "#94a3b8",
-  opacity: 0.85,
-  pointerEvents: "none",
-};
