@@ -50,6 +50,7 @@ const APP_META_COLLECTION = "app_meta";
 const DAILY_RECORDS_COLLECTION = "daily_records";
 const USERS_COLLECTION = "users";
 const ACCESS_REQUESTS_COLLECTION = "access_requests";
+const VERSION = "v2026.04.04-4";
 
 const TAIPEI_HEADQUARTERS_VIEWERS = [
   { name: "秀芬", email: "b02008@goodfinance.com" },
@@ -261,11 +262,24 @@ export default function App() {
   const canManageUsers = role === "admin";
   const canSeePeoplePage = role === "admin";
 
+  const enterRequestFlow = (firebaseUser) => {
+    setAccessRequestNotice("");
+    setPendingAuthUser(firebaseUser);
+    setRequestForm({
+      name: firebaseUser?.displayName || "",
+      email: normalizeEmail(firebaseUser?.email || ""),
+    });
+    setUser(null);
+    setUserProfile(null);
+    setLoading(false);
+    setFirebaseReady(true);
+  };
+
   const loadAccessRequests = async () => {
     const requestsSnap = await getDocs(collection(db, ACCESS_REQUESTS_COLLECTION));
     const loaded = [];
     requestsSnap.forEach((item) => {
-      loaded.push({ id: item.id, ...item.data() });
+      loaded.push({ id: item.id, ...item.data(), selectedRole: "viewer" });
     });
     loaded.sort((a, b) => {
       const aTime = a.createdAt?.seconds || 0;
@@ -277,19 +291,43 @@ export default function App() {
 
   const loadAllAppData = async (firebaseUser) => {
     const email = normalizeEmail(firebaseUser.email || "");
-    const userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
+    let userSnap;
+
+    try {
+      userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
+    } catch (error) {
+      if (error?.code === "permission-denied") {
+        // 若 users 規則尚未放行陌生帳號查詢，改走申請流程
+        const requestSnap = await getDoc(doc(db, ACCESS_REQUESTS_COLLECTION, email)).catch(
+          () => null
+        );
+        if (requestSnap?.exists()) {
+          setAccessRequestNotice(
+            "你的申請已在審核流程中。我們完成設定後會立即開放存取，請稍候再登入。"
+          );
+          await signOut(auth);
+          return;
+        }
+        enterRequestFlow(firebaseUser);
+        return;
+      }
+      throw error;
+    }
 
     if (!userSnap.exists()) {
-      setAccessRequestNotice("");
-      setPendingAuthUser(firebaseUser);
-      setRequestForm({
-        name: firebaseUser.displayName || "",
-        email: normalizeEmail(firebaseUser.email || ""),
-      });
-      setUser(null);
-      setUserProfile(null);
-      setLoading(false);
-      setFirebaseReady(true);
+      const requestSnap = await getDoc(doc(db, ACCESS_REQUESTS_COLLECTION, email)).catch(
+        () => null
+      );
+
+      if (requestSnap?.exists()) {
+        setAccessRequestNotice(
+          "你的申請已在審核流程中。我們完成設定後會立即開放存取，請稍候再登入。"
+        );
+        await signOut(auth);
+        return;
+      }
+
+      enterRequestFlow(firebaseUser);
       return;
     }
 
@@ -332,12 +370,15 @@ export default function App() {
     setAllData(loadedData);
     setMatrix(ensureMatrixShape(loadedData[date] || {}, dbStaff));
     setUsersList(sortUsers(loadedUsers));
+
     if ((profile.role || "") === "admin") {
       await loadAccessRequests();
     } else {
       setAccessRequests([]);
     }
+
     setPendingAuthUser(null);
+    setAccessRequestNotice("");
   };
 
   useEffect(() => {
@@ -408,9 +449,11 @@ export default function App() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+
       setAccessRequestNotice(
         "申請已送出。我們會在完成權限審核後第一時間開放存取，請稍候片刻，再回來登入即可。"
       );
+
       await signOut(auth);
       setPendingAuthUser(null);
       setRequestForm({ name: "", email: "" });
@@ -516,7 +559,6 @@ export default function App() {
           return next;
         });
         alert("當日資料為空，已清除該日紀錄");
-        setSaving(false);
         return;
       }
 
@@ -890,6 +932,7 @@ export default function App() {
         <div style={cardStyle}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>載入中...</div>
         </div>
+        <div style={versionStyle}>{VERSION}</div>
       </div>
     );
   }
@@ -897,15 +940,18 @@ export default function App() {
   if (!user) {
     return (
       <div style={pageStyle}>
-        <div style={{ ...cardStyle, maxWidth: 520, margin: "80px auto" }}>
-          <h1 style={{ marginTop: 0, marginBottom: 12, fontSize: 32 }}>美好證券台北總公司開戶統計系統</h1>
+        <div style={{ ...cardStyle, maxWidth: 1040, margin: "80px auto", padding: 32 }}>
+          <h1 style={{ marginTop: 0, marginBottom: 28, fontSize: 46, lineHeight: 1.15 }}>
+            美好證券台北總公司開戶統計系統
+          </h1>
 
           {pendingAuthUser ? (
             <>
-              <div style={{ color: "#475569", marginBottom: 12, lineHeight: 1.8 }}>
+              <div style={{ color: "#475569", marginBottom: 16, lineHeight: 1.8, fontSize: 16 }}>
                 目前尚未建立你的系統權限。請先填寫姓名與完整 email，送出後我們會盡快完成審核。
               </div>
-              <div style={{ display: "grid", gap: 12, marginBottom: 12 }}>
+
+              <div style={{ display: "grid", gap: 14, marginBottom: 18, maxWidth: 560 }}>
                 <div>
                   <label style={labelStyle}>姓名</label>
                   <input
@@ -931,11 +977,13 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <button
                   onClick={handleSubmitAccessRequest}
                   style={{
                     ...primaryButtonStyle,
+                    minWidth: 140,
                     opacity: requestSubmitting ? 0.6 : 1,
                     cursor: requestSubmitting ? "not-allowed" : "pointer",
                   }}
@@ -951,13 +999,20 @@ export default function App() {
           ) : (
             <>
               {authError ? <div style={errorBoxStyle}>{authError}</div> : null}
-              {accessRequestNotice ? <div style={successNoticeStyle}>{accessRequestNotice}</div> : null}
-              <button onClick={handleGoogleLogin} style={primaryButtonStyle}>
+              {accessRequestNotice ? (
+                <div style={successNoticeStyle}>{accessRequestNotice}</div>
+              ) : null}
+              <button
+                onClick={handleGoogleLogin}
+                style={{ ...primaryButtonStyle, minWidth: 200, minHeight: 72, fontSize: 24 }}
+              >
                 使用 Google 登入
               </button>
             </>
           )}
         </div>
+
+        <div style={versionStyle}>{VERSION}</div>
       </div>
     );
   }
@@ -967,7 +1022,9 @@ export default function App() {
       <div style={containerStyle}>
         <div style={headerStyle}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>美好證券台北總公司開戶統計系統</h1>
+            <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>
+              美好證券台北總公司開戶統計系統
+            </h1>
             <div style={{ color: "#475569", marginTop: 8, fontSize: 14 }}>
               已支援：Google 登入、白名單權限、多人同步、匯出 Excel、日／週／月／年報表、可回溯修改、彈性增減營業員
             </div>
@@ -1105,28 +1162,24 @@ export default function App() {
                   >
                     日報表
                   </button>
-
                   <button
                     onClick={() => setReportType("weekly")}
                     style={reportType === "weekly" ? activeTabButtonStyle : tabButtonStyle}
                   >
                     週報表
                   </button>
-
                   <button
                     onClick={() => setReportType("monthly")}
                     style={reportType === "monthly" ? activeTabButtonStyle : tabButtonStyle}
                   >
                     月報表
                   </button>
-
                   <button
                     onClick={() => setReportType("yearly")}
                     style={reportType === "yearly" ? activeTabButtonStyle : tabButtonStyle}
                   >
                     年報表
                   </button>
-
                   <button onClick={exportReport} style={successButtonStyle}>
                     匯出 Excel
                   </button>
@@ -1141,7 +1194,6 @@ export default function App() {
                       style={inputStyle}
                     />
                   )}
-
                   {reportType === "monthly" && (
                     <input
                       type="month"
@@ -1150,7 +1202,6 @@ export default function App() {
                       style={inputStyle}
                     />
                   )}
-
                   {reportType === "yearly" && (
                     <input
                       type="number"
@@ -1457,7 +1508,9 @@ export default function App() {
                       accessRequests.map((item) => (
                         <tr key={item.id}>
                           <td style={nameCellStyle}>{item.name || "—"}</td>
-                          <td style={{ ...tableCellStyle, textAlign: "left" }}>{item.email || item.id}</td>
+                          <td style={{ ...tableCellStyle, textAlign: "left" }}>
+                            {item.email || item.id}
+                          </td>
                           <td style={tableCellStyle}>
                             <span style={statusBadgeStyle(true)}>待審核</span>
                           </td>
@@ -1467,7 +1520,9 @@ export default function App() {
                               onChange={(e) =>
                                 setAccessRequests((prev) =>
                                   prev.map((req) =>
-                                    req.id === item.id ? { ...req, selectedRole: e.target.value } : req
+                                    req.id === item.id
+                                      ? { ...req, selectedRole: e.target.value }
+                                      : req
                                   )
                                 )
                               }
@@ -1479,9 +1534,21 @@ export default function App() {
                             </select>
                           </td>
                           <td style={tableCellStyle}>
-                            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 8,
+                                justifyContent: "center",
+                                flexWrap: "wrap",
+                              }}
+                            >
                               <button
-                                onClick={() => handleApproveAccessRequest(item, item.selectedRole || "viewer")}
+                                onClick={() =>
+                                  handleApproveAccessRequest(
+                                    item,
+                                    item.selectedRole || "viewer"
+                                  )
+                                }
                                 style={primaryButtonStyle}
                               >
                                 確認
@@ -1498,7 +1565,10 @@ export default function App() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={5} style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}>
+                        <td
+                          colSpan={5}
+                          style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
+                        >
                           目前沒有待審核申請
                         </td>
                       </tr>
@@ -1534,7 +1604,9 @@ export default function App() {
                             {item.email || item.id}
                           </td>
                           <td style={tableCellStyle}>
-                            <span style={roleBadgeStyle(item.role)}>{item.role || "viewer"}</span>
+                            <span style={roleBadgeStyle(item.role)}>
+                              {item.role || "viewer"}
+                            </span>
                           </td>
                           <td style={tableCellStyle}>
                             <span style={statusBadgeStyle(item.active !== false)}>
@@ -1577,7 +1649,10 @@ export default function App() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={5} style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}>
+                        <td
+                          colSpan={5}
+                          style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
+                        >
                           目前沒有使用者資料
                         </td>
                       </tr>
@@ -1589,6 +1664,8 @@ export default function App() {
           </div>
         ) : null}
       </div>
+
+      <div style={versionStyle}>{VERSION}</div>
     </div>
   );
 }
@@ -1803,16 +1880,18 @@ const errorBoxStyle = {
   border: "1px solid #fecaca",
   padding: 12,
   borderRadius: 10,
+  lineHeight: 1.7,
 };
 
 const successNoticeStyle = {
-  marginBottom: 12,
-  color: "#065f46",
+  marginBottom: 18,
+  color: "#166534",
   background: "#ecfdf5",
-  border: "1px solid #a7f3d0",
-  padding: 12,
-  borderRadius: 10,
-  lineHeight: 1.7,
+  border: "1px solid #86efac",
+  padding: 24,
+  borderRadius: 20,
+  lineHeight: 1.8,
+  fontSize: 17,
 };
 
 const baseButtonStyle = {
@@ -1890,3 +1969,13 @@ const statusBadgeStyle = (active) => ({
   background: active ? "#dcfce7" : "#fee2e2",
   color: active ? "#15803d" : "#b91c1c",
 });
+
+const versionStyle = {
+  position: "fixed",
+  right: 16,
+  bottom: 10,
+  fontSize: 12,
+  color: "#94a3b8",
+  opacity: 0.9,
+  pointerEvents: "none",
+};
