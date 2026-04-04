@@ -50,7 +50,7 @@ const APP_META_COLLECTION = "app_meta";
 const DAILY_RECORDS_COLLECTION = "daily_records";
 const USERS_COLLECTION = "users";
 const ACCESS_REQUESTS_COLLECTION = "access_requests";
-const VERSION = "v2026.04.04-4";
+const VERSION = "v2026.04.04-5";
 
 const TAIPEI_HEADQUARTERS_VIEWERS = [
   { name: "秀芬", email: "b02008@goodfinance.com" },
@@ -184,6 +184,25 @@ function buildGroupedRows(rows) {
   });
 }
 
+function buildStaffAggregateRows(rows) {
+  const grouped = {};
+  rows.forEach((r) => {
+    if (!grouped[r.staff]) {
+      grouped[r.staff] = { staff: r.staff, values: {}, total: 0 };
+      BUSINESS_TYPES.forEach((biz) => {
+        grouped[r.staff].values[biz] = 0;
+      });
+    }
+    grouped[r.staff].values[r.businessType] += safeNumber(r.qty);
+    grouped[r.staff].total += safeNumber(r.qty);
+  });
+
+  return Object.values(grouped).sort((a, b) => {
+    if (b.total !== a.total) return b.total - a.total;
+    return a.staff.localeCompare(b.staff);
+  });
+}
+
 function downloadExcelLikeFile(filename, rows) {
   const csv = rows
     .map((row) =>
@@ -261,6 +280,7 @@ export default function App() {
   const canManageStaff = role === "admin";
   const canManageUsers = role === "admin";
   const canSeePeoplePage = role === "admin";
+  const isAggregateReport = reportType === "weekly" || reportType === "monthly" || reportType === "yearly";
 
   const enterRequestFlow = (firebaseUser) => {
     setAccessRequestNotice("");
@@ -297,7 +317,6 @@ export default function App() {
       userSnap = await getDoc(doc(db, USERS_COLLECTION, email));
     } catch (error) {
       if (error?.code === "permission-denied") {
-        // 若 users 規則尚未放行陌生帳號查詢，改走申請流程
         const requestSnap = await getDoc(doc(db, ACCESS_REQUESTS_COLLECTION, email)).catch(
           () => null
         );
@@ -847,21 +866,22 @@ export default function App() {
     if (reportType === "daily") {
       return allRows.filter((r) => r.date === reportDate);
     }
-
     if (reportType === "weekly") {
       const start = getWeekStart(reportDate);
       const end = getWeekEnd(reportDate);
       return allRows.filter((r) => r.date >= start && r.date <= end);
     }
-
     if (reportType === "monthly") {
       return allRows.filter((r) => getMonthKey(r.date) === reportMonth);
     }
-
     return allRows.filter((r) => getYearKey(r.date) === reportYear);
   }, [allRows, reportType, reportDate, reportMonth, reportYear]);
 
-  const groupedReportRows = useMemo(() => buildGroupedRows(reportRows), [reportRows]);
+  const displayRows = useMemo(() => {
+    return reportType === "daily"
+      ? buildGroupedRows(reportRows)
+      : buildStaffAggregateRows(reportRows);
+  }, [reportRows, reportType]);
 
   const reportSummary = useMemo(() => {
     const byStaff = {};
@@ -899,16 +919,27 @@ export default function App() {
     const rows = [];
     rows.push([title]);
     rows.push([]);
-    rows.push(["日期", "營業員", ...BUSINESS_TYPES, "合計"]);
 
-    groupedReportRows.forEach((row) => {
-      rows.push([
-        row.date,
-        row.staff,
-        ...BUSINESS_TYPES.map((biz) => row.values[biz] || 0),
-        row.total,
-      ]);
-    });
+    if (reportType === "daily") {
+      rows.push(["日期", "營業員", ...BUSINESS_TYPES, "合計"]);
+      displayRows.forEach((row) => {
+        rows.push([
+          row.date,
+          row.staff,
+          ...BUSINESS_TYPES.map((biz) => row.values[biz] || 0),
+          row.total,
+        ]);
+      });
+    } else {
+      rows.push(["營業員", ...BUSINESS_TYPES, "合計"]);
+      displayRows.forEach((row) => {
+        rows.push([
+          row.staff,
+          ...BUSINESS_TYPES.map((biz) => row.values[biz] || 0),
+          row.total,
+        ]);
+      });
+    }
 
     rows.push([]);
     rows.push(["總開戶數", reportSummary.total]);
@@ -1220,8 +1251,14 @@ export default function App() {
                   <table style={tableStyle}>
                     <thead>
                       <tr>
-                        <th style={lightHeadStyle}>日期</th>
-                        <th style={lightHeadStyle}>營業員</th>
+                        {reportType === "daily" ? (
+                          <>
+                            <th style={lightHeadStyle}>日期</th>
+                            <th style={lightHeadStyle}>營業員</th>
+                          </>
+                        ) : (
+                          <th style={lightHeadStyle}>營業員</th>
+                        )}
                         {BUSINESS_TYPES.map((biz) => (
                           <th key={biz} style={lightHeadStyle}>
                             {biz}
@@ -1231,11 +1268,17 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {groupedReportRows.length ? (
-                        groupedReportRows.map((row, idx) => (
-                          <tr key={`${row.date}_${row.staff}_${idx}`}>
-                            <td style={tableCellStyle}>{row.date}</td>
-                            <td style={nameCellStyle}>{row.staff}</td>
+                      {displayRows.length ? (
+                        displayRows.map((row, idx) => (
+                          <tr key={`${row.staff}_${idx}_${row.date || "agg"}`}>
+                            {reportType === "daily" ? (
+                              <>
+                                <td style={tableCellStyle}>{row.date}</td>
+                                <td style={nameCellStyle}>{row.staff}</td>
+                              </>
+                            ) : (
+                              <td style={nameCellStyle}>{row.staff}</td>
+                            )}
                             {BUSINESS_TYPES.map((biz) => (
                               <td key={biz} style={tableCellStyle}>
                                 {row.values[biz] || 0}
@@ -1247,7 +1290,7 @@ export default function App() {
                       ) : (
                         <tr>
                           <td
-                            colSpan={BUSINESS_TYPES.length + 3}
+                            colSpan={BUSINESS_TYPES.length + (reportType === "daily" ? 3 : 2)}
                             style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
                           >
                             目前沒有資料
