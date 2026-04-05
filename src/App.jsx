@@ -8,9 +8,20 @@ import {
   serverTimestamp,
   setDoc,
   deleteDoc,
-  writeBatch,
 } from "firebase/firestore";
 import { auth, db, provider } from "./firebase";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from "recharts";
 
 const BUSINESS_TYPES = [
   "證券（傳統）",
@@ -208,6 +219,63 @@ function normalizeEmail(email) {
   return (email || "").trim().toLowerCase();
 }
 
+
+function countDistinctActiveStaff(rows) {
+  return new Set((rows || []).map((r) => r.staff).filter(Boolean)).size;
+}
+
+function buildMonthlyTotals(rows) {
+  const monthly = {};
+  (rows || []).forEach((r) => {
+    const month = getMonthKey(r.date);
+    monthly[month] = (monthly[month] || 0) + safeNumber(r.qty);
+  });
+  return Object.keys(monthly)
+    .sort()
+    .map((month) => ({ month, total: monthly[month] }));
+}
+
+function buildMonthlyBusinessStack(rows) {
+  const monthly = {};
+  (rows || []).forEach((r) => {
+    const month = getMonthKey(r.date);
+    if (!monthly[month]) {
+      monthly[month] = { month };
+      BUSINESS_TYPES.forEach((biz) => {
+        monthly[month][biz] = 0;
+      });
+      monthly[month].total = 0;
+    }
+    monthly[month][r.businessType] += safeNumber(r.qty);
+    monthly[month].total += safeNumber(r.qty);
+  });
+
+  return Object.keys(monthly)
+    .sort()
+    .map((month) => monthly[month]);
+}
+
+function buildMonthlyStaffRanking(rows, monthKey) {
+  const grouped = {};
+  (rows || [])
+    .filter((r) => getMonthKey(r.date) === monthKey)
+    .forEach((r) => {
+      grouped[r.staff] = (grouped[r.staff] || 0) + safeNumber(r.qty);
+    });
+
+  return Object.entries(grouped)
+    .map(([staff, total]) => ({ staff, total }))
+    .sort((a, b) => {
+      if (b.total !== a.total) return b.total - a.total;
+      return a.staff.localeCompare(b.staff);
+    })
+    .slice(0, 10);
+}
+
+function formatChartNumber(value) {
+  return Number(value || 0).toLocaleString("zh-TW");
+}
+
 function sortUsers(users) {
   return [...users].sort((a, b) => {
     if ((a.role || "") !== (b.role || "")) {
@@ -218,119 +286,11 @@ function sortUsers(users) {
   });
 }
 
-function isIsoDateKey(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
-}
-
-function normalizeImportedMatrix(rawMatrix, staffList) {
-  const base = createEmptyMatrix(staffList);
-
-  if (!rawMatrix || typeof rawMatrix !== "object") return base;
-
-  Object.keys(rawMatrix).forEach((staff) => {
-    const staffRow = rawMatrix[staff];
-    if (!staffRow || typeof staffRow !== "object") return;
-
-    if (!base[staff]) {
-      base[staff] = {};
-      BUSINESS_TYPES.forEach((biz) => {
-        base[staff][biz] = "";
-      });
-    }
-
-    BUSINESS_TYPES.forEach((biz) => {
-      const value = safeNumber(staffRow[biz]);
-      base[staff][biz] = value > 0 ? value : "";
-    });
-  });
-
-  return base;
-}
-
-function rowsArrayToMatrix(rows) {
-  const matrix = {};
-
-  (rows || []).forEach((item) => {
-    const staff = String(item?.staff || "").trim();
-    if (!staff) return;
-
-    if (!matrix[staff]) {
-      matrix[staff] = {};
-    }
-
-    const values = item?.values && typeof item.values === "object" ? item.values : {};
-
-    BUSINESS_TYPES.forEach((biz) => {
-      const value = safeNumber(values[biz]);
-      matrix[staff][biz] = value;
-    });
-  });
-
-  return matrix;
-}
-
-function extractImportPayload(rawJson) {
-  if (!rawJson) return {};
-
-  if (typeof rawJson === "object" && !Array.isArray(rawJson)) {
-    const directDateKeys = Object.keys(rawJson).filter(isIsoDateKey);
-    if (directDateKeys.length) {
-      const output = {};
-      directDateKeys.forEach((date) => {
-        output[date] = rawJson[date];
-      });
-      return output;
-    }
-
-    if (rawJson.data && typeof rawJson.data === "object") {
-      const nestedDateKeys = Object.keys(rawJson.data).filter(isIsoDateKey);
-      if (nestedDateKeys.length) {
-        const output = {};
-        nestedDateKeys.forEach((date) => {
-          output[date] = rawJson.data[date];
-        });
-        return output;
-      }
-    }
-
-    if (Array.isArray(rawJson.records)) {
-      const output = {};
-      rawJson.records.forEach((item) => {
-        if (item?.date && isIsoDateKey(item.date)) {
-          if (Array.isArray(item.rows)) {
-            output[item.date] = rowsArrayToMatrix(item.rows);
-          } else {
-            output[item.date] = item.data || item.matrix || {};
-          }
-        }
-      });
-      return output;
-    }
-  }
-
-  if (Array.isArray(rawJson)) {
-    const output = {};
-    rawJson.forEach((item) => {
-      if (item?.date && isIsoDateKey(item.date)) {
-        if (Array.isArray(item.rows)) {
-          output[item.date] = rowsArrayToMatrix(item.rows);
-        } else {
-          output[item.date] = item.data || item.matrix || {};
-        }
-      }
-    });
-    return output;
-  }
-
-  return {};
-}
-
 export default function App() {
   const [firebaseReady, setFirebaseReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshingPeoplePage, setRefreshingPeoplePage] = useState(false);
-  const [bulkImporting, setBulkImporting] = useState(false);
 
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
@@ -795,83 +755,6 @@ export default function App() {
     }
   };
 
-  const handleImportPreviewJson = async () => {
-    if (!canManageUsers) return;
-
-    const confirmed = window.confirm(
-      "這會把 public/import-preview.json 的歷史資料正式寫入 Firestore。\n\n同日期若已存在資料，會以匯入內容覆蓋更新。確定要繼續嗎？"
-    );
-    if (!confirmed) return;
-
-    setBulkImporting(true);
-
-    try {
-      const res = await fetch("/import-preview.json", { cache: "no-store" });
-      if (!res.ok) {
-        throw new Error(`讀取 import-preview.json 失敗：HTTP ${res.status}`);
-      }
-
-      const rawJson = await res.json();
-      const importMap = extractImportPayload(rawJson);
-      const importDates = Object.keys(importMap).filter(isIsoDateKey).sort();
-
-      if (!importDates.length) {
-        throw new Error("import-preview.json 內沒有可匯入的日期資料");
-      }
-
-      const BATCH_LIMIT = 400;
-      let totalWritten = 0;
-
-      for (let i = 0; i < importDates.length; i += BATCH_LIMIT) {
-        const chunk = importDates.slice(i, i + BATCH_LIMIT);
-        const batch = writeBatch(db);
-
-        chunk.forEach((dateKey) => {
-          const normalizedMatrix = normalizeImportedMatrix(
-            importMap[dateKey],
-            staffOptions
-          );
-
-          batch.set(
-            doc(db, DAILY_RECORDS_COLLECTION, dateKey),
-            {
-              date: dateKey,
-              data: normalizedMatrix,
-              updatedBy: user?.email || "",
-              updatedAt: serverTimestamp(),
-              importedBy: user?.email || "",
-              importedAt: serverTimestamp(),
-              source: "import-preview.json",
-            },
-            { merge: true }
-          );
-
-          totalWritten += 1;
-        });
-
-        await batch.commit();
-      }
-
-      const recordsSnap = await getDocs(collection(db, DAILY_RECORDS_COLLECTION));
-      const loadedData = {};
-      recordsSnap.forEach((recordDoc) => {
-        const payload = recordDoc.data();
-        loadedData[recordDoc.id] = ensureMatrixShape(payload.data || {}, staffOptions);
-      });
-
-      setAllData(loadedData);
-      setMatrix(ensureMatrixShape(loadedData[date] || {}, staffOptions));
-      setLastClearedMatrix(null);
-
-      alert(`正式匯入完成，共寫入 ${totalWritten} 天資料。`);
-    } catch (error) {
-      console.error(error);
-      alert(`正式匯入失敗：${error.message || "未知錯誤"}`);
-    } finally {
-      setBulkImporting(false);
-    }
-  };
-
   const resetUserForm = () => {
     setUserForm({
       email: "",
@@ -1067,6 +950,57 @@ export default function App() {
     [allData]
   );
 
+  const dashboardToday = getToday();
+
+  const dashboardKpis = useMemo(() => {
+    const weekStart = getWeekStart(dashboardToday);
+    const weekEnd = getWeekEnd(dashboardToday);
+    const currentMonth = getMonthKey(dashboardToday);
+    const currentYear = getYearKey(dashboardToday);
+
+    const todayRows = allRows.filter((r) => r.date === dashboardToday);
+    const weekRows = allRows.filter((r) => r.date >= weekStart && r.date <= weekEnd);
+    const monthRows = allRows.filter((r) => getMonthKey(r.date) === currentMonth);
+    const yearRows = allRows.filter((r) => getYearKey(r.date) === currentYear);
+
+    return {
+      today: {
+        label: "今日總開戶數",
+        value: todayRows.reduce((sum, r) => sum + safeNumber(r.qty), 0),
+        subLabel: dashboardToday,
+      },
+      week: {
+        label: "本週總開戶數",
+        value: weekRows.reduce((sum, r) => sum + safeNumber(r.qty), 0),
+        subLabel: `${weekStart} ~ ${weekEnd}`,
+      },
+      month: {
+        label: "本月總開戶數",
+        value: monthRows.reduce((sum, r) => sum + safeNumber(r.qty), 0),
+        subLabel: currentMonth,
+      },
+      year: {
+        label: "本年總開戶數",
+        value: yearRows.reduce((sum, r) => sum + safeNumber(r.qty), 0),
+        subLabel: `${currentYear}年`,
+      },
+    };
+  }, [allRows, dashboardToday]);
+
+  const monthlyTrendData = useMemo(() => {
+    const monthly = buildMonthlyTotals(allRows);
+    return monthly.slice(-12);
+  }, [allRows]);
+
+  const monthlyBusinessStackData = useMemo(() => {
+    const monthly = buildMonthlyBusinessStack(allRows);
+    return monthly.slice(-12);
+  }, [allRows]);
+
+  const monthlyStaffRankingData = useMemo(() => {
+    return buildMonthlyStaffRanking(allRows, reportMonth);
+  }, [allRows, reportMonth]);
+
   const exportReport = () => {
     const title =
       reportType === "daily"
@@ -1258,7 +1192,138 @@ export default function App() {
         </div>
 
         {activePage === "opening" ? (
-          <div style={mainGridStyle}>
+          <>
+            <div style={dashboardGridStyle}>
+              {Object.values(dashboardKpis).map((item) => (
+                <div key={item.label} style={kpiCardStyle}>
+                  <div style={kpiLabelStyle}>{item.label}</div>
+                  <div style={kpiValueStyle}>{item.value}</div>
+                  <div style={kpiSubLabelStyle}>{item.subLabel}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ ...cardStyle, marginBottom: 20 }}>
+              <div style={sectionHeaderRowStyle}>
+                <div>
+                  <h2 style={sectionTitleStyle}>首頁儀表板</h2>
+                  <div style={{ color: "#64748b", marginTop: -4 }}>
+                    趨勢圖預設顯示最近 12 個月份；營業員排行依目前選定月份呈現。
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 14, color: "#475569", fontWeight: 700 }}>
+                    排行月份
+                  </span>
+                  <input
+                    type="month"
+                    value={reportMonth}
+                    onChange={(e) => setReportMonth(e.target.value)}
+                    style={dateInputStyle}
+                  />
+                </div>
+              </div>
+
+              <div style={chartsGridStyle}>
+                <div style={chartCardStyle}>
+                  <h3 style={chartTitleStyle}>營業員月度排行條圖</h3>
+                  <div style={chartSubtitleStyle}>{reportMonth}｜前 10 名</div>
+                  <div style={chartWrapStyle}>
+                    {monthlyStaffRankingData.length ? (
+                      <ResponsiveContainer width="100%" height={360}>
+                        <BarChart
+                          data={monthlyStaffRankingData}
+                          layout="vertical"
+                          margin={{ top: 8, right: 24, left: 24, bottom: 8 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis type="number" allowDecimals={false} />
+                          <YAxis
+                            type="category"
+                            dataKey="staff"
+                            width={72}
+                            tick={{ fontSize: 12 }}
+                          />
+                          <Tooltip formatter={(value) => formatChartNumber(value)} />
+                          <Bar dataKey="total" fill="#2563eb" radius={[0, 6, 6, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div style={emptyChartStyle}>本月目前沒有排行資料</div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={chartCardStyle}>
+                  <h3 style={chartTitleStyle}>每月開戶數趨勢圖</h3>
+                  <div style={chartSubtitleStyle}>最近 12 個月份</div>
+                  <div style={chartWrapStyle}>
+                    {monthlyTrendData.length ? (
+                      <ResponsiveContainer width="100%" height={360}>
+                        <LineChart
+                          data={monthlyTrendData}
+                          margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                          <YAxis allowDecimals={false} />
+                          <Tooltip formatter={(value) => formatChartNumber(value)} />
+                          <Legend />
+                          <Line
+                            type="monotone"
+                            dataKey="total"
+                            name="總開戶數"
+                            stroke="#0f766e"
+                            strokeWidth={3}
+                            dot={{ r: 3 }}
+                            activeDot={{ r: 5 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div style={emptyChartStyle}>目前沒有月度趨勢資料</div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ ...chartCardStyle, gridColumn: "1 / -1" }}>
+                  <h3 style={chartTitleStyle}>各業務別堆疊圖</h3>
+                  <div style={chartSubtitleStyle}>最近 12 個月份</div>
+                  <div style={chartWrapStyle}>
+                    {monthlyBusinessStackData.length ? (
+                      <ResponsiveContainer width="100%" height={420}>
+                        <BarChart
+                          data={monthlyBusinessStackData}
+                          margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                          <YAxis allowDecimals={false} />
+                          <Tooltip formatter={(value) => formatChartNumber(value)} />
+                          <Legend />
+                          <Bar dataKey="證券（傳統）" stackId="a" fill="#1d4ed8" />
+                          <Bar dataKey="證券（分戶帳）" stackId="a" fill="#2563eb" />
+                          <Bar dataKey="既有轉分戶帳" stackId="a" fill="#3b82f6" />
+                          <Bar dataKey="期貨" stackId="a" fill="#0f766e" />
+                          <Bar dataKey="融資" stackId="a" fill="#14b8a6" />
+                          <Bar dataKey="不限用途" stackId="a" fill="#22c55e" />
+                          <Bar dataKey="複委託" stackId="a" fill="#84cc16" />
+                          <Bar dataKey="債券+" stackId="a" fill="#f59e0b" />
+                          <Bar dataKey="PGN" stackId="a" fill="#f97316" />
+                          <Bar dataKey="ELN" stackId="a" fill="#ef4444" />
+                          <Bar dataKey="RP" stackId="a" fill="#7c3aed" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div style={emptyChartStyle}>目前沒有業務別堆疊資料</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={mainGridStyle}>
             <div>
               <div style={cardStyle}>
                 <h2 style={sectionTitleStyle}>每日開戶數據</h2>
@@ -1607,6 +1672,7 @@ export default function App() {
               </div>
             </div>
           </div>
+          </>
         ) : canSeePeoplePage ? (
           <div style={peopleGridStyle}>
             <div style={cardStyle}>
@@ -1703,31 +1769,6 @@ export default function App() {
                   清空表單
                 </button>
               </div>
-            </div>
-
-            <div style={{ ...cardStyle, marginTop: 18 }}>
-              <h2 style={sectionTitleStyle}>歷史資料正式匯入</h2>
-              <div style={{ color: "#64748b", marginBottom: 14, lineHeight: 1.8 }}>
-                來源檔案：public/import-preview.json
-                <br />
-                寫入位置：Firestore / daily_records
-                <br />
-                支援目前 Google Sheet Apps Script v5 輸出的 rows 格式。
-                <br />
-                同日期若已存在資料，會以匯入內容覆蓋更新。
-              </div>
-
-              <button
-                onClick={handleImportPreviewJson}
-                style={{
-                  ...successButtonStyle,
-                  opacity: bulkImporting ? 0.6 : 1,
-                  cursor: bulkImporting ? "not-allowed" : "pointer",
-                }}
-                disabled={bulkImporting}
-              >
-                {bulkImporting ? "正式匯入中..." : "正式匯入 import-preview.json"}
-              </button>
             </div>
 
             <div style={{ ...cardStyle, marginTop: 18 }}>
@@ -2113,6 +2154,82 @@ const cellInputStyle = {
   borderRadius: 8,
   padding: "6px 8px",
   textAlign: "center",
+  fontSize: 14,
+};
+
+const dashboardGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: 16,
+  marginBottom: 20,
+};
+
+const kpiCardStyle = {
+  background: "#ffffff",
+  border: "1px solid #e2e8f0",
+  borderRadius: 14,
+  padding: 18,
+  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+};
+
+const kpiLabelStyle = {
+  fontSize: 14,
+  color: "#64748b",
+  fontWeight: 700,
+  marginBottom: 8,
+};
+
+const kpiValueStyle = {
+  fontSize: 34,
+  fontWeight: 800,
+  color: "#0f172a",
+  lineHeight: 1.15,
+};
+
+const kpiSubLabelStyle = {
+  marginTop: 8,
+  fontSize: 13,
+  color: "#94a3b8",
+};
+
+const chartsGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 16,
+};
+
+const chartCardStyle = {
+  border: "1px solid #e2e8f0",
+  borderRadius: 12,
+  padding: 14,
+  background: "#ffffff",
+};
+
+const chartTitleStyle = {
+  marginTop: 0,
+  marginBottom: 6,
+  fontSize: 20,
+  color: "#0f172a",
+};
+
+const chartSubtitleStyle = {
+  fontSize: 13,
+  color: "#64748b",
+  marginBottom: 10,
+};
+
+const chartWrapStyle = {
+  width: "100%",
+  height: 360,
+};
+
+const emptyChartStyle = {
+  width: "100%",
+  height: "100%",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "#94a3b8",
   fontSize: 14,
 };
 
