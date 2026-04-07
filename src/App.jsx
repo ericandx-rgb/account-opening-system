@@ -329,6 +329,15 @@ export default function App() {
   const canManageStaff = role === "admin";
   const canManageUsers = role === "admin";
   const canSeePeoplePage = role === "admin";
+  const canSeeDailyInputSections = role === "admin" || role === "editor";
+
+  const openingGridStyle = canSeeDailyInputSections
+    ? mainGridStyle
+    : {
+        display: "grid",
+        gridTemplateColumns: "1fr",
+        gap: 20,
+      };
 
   const enterRequestFlow = (firebaseUser) => {
     setAccessRequestNotice("");
@@ -1151,9 +1160,6 @@ export default function App() {
             <h1 style={{ margin: 0, fontSize: 34, color: "#0f172a" }}>
               美好證券台北總公司開戶統計系統
             </h1>
-            <div style={{ color: "#475569", marginTop: 8, fontSize: 14 }}>
-              已支援：Google 登入、白名單權限、多人同步、匯出 Excel、日／週／月／年報表、可回溯修改、彈性增減營業員
-            </div>
           </div>
 
           <div style={userBoxStyle}>
@@ -1206,7 +1212,7 @@ export default function App() {
             <div style={{ ...cardStyle, marginBottom: 20 }}>
               <div style={sectionHeaderRowStyle}>
                 <div>
-                  <h2 style={sectionTitleStyle}>首頁儀表板</h2>
+                  <h2 style={sectionTitleStyle}>開戶儀表板</h2>
                   <div style={{ color: "#64748b", marginTop: -4 }}>
                     趨勢圖預設顯示最近 12 個月份；營業員排行依目前選定月份呈現。
                   </div>
@@ -1323,355 +1329,356 @@ export default function App() {
               </div>
             </div>
 
-            <div style={mainGridStyle}>
-            <div>
-              <div style={cardStyle}>
-                <h2 style={sectionTitleStyle}>每日開戶數據</h2>
+            <div style={openingGridStyle}>
+              <div>
+                {canSeeDailyInputSections ? (
+                  <div style={cardStyle}>
+                    <h2 style={sectionTitleStyle}>每日開戶數據</h2>
 
-                <div style={toolbarStyle}>
-                  <input
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    style={dateInputStyle}
-                  />
+                    <div style={toolbarStyle}>
+                      <input
+                        type="date"
+                        value={date}
+                        onChange={(e) => setDate(e.target.value)}
+                        style={dateInputStyle}
+                      />
 
-                  <button
-                    onClick={handleSave}
-                    style={{
-                      ...primaryButtonStyle,
-                      opacity: !canInputDaily || saving ? 0.6 : 1,
-                      cursor: !canInputDaily || saving ? "not-allowed" : "pointer",
-                    }}
-                    disabled={!canInputDaily || saving}
-                  >
-                    {saving ? "儲存中..." : "儲存當日資料"}
-                  </button>
-
-                  {canInputDaily ? (
-                    <>
                       <button
-                        onClick={handleClearMatrix}
-                        style={warningButtonStyle}
-                      >
-                        清空
-                      </button>
-                      <button
-                        onClick={handleRestoreMatrix}
+                        onClick={handleSave}
                         style={{
-                          ...restoreButtonStyle,
-                          opacity: lastClearedMatrix ? 1 : 0.5,
-                          cursor: lastClearedMatrix ? "pointer" : "not-allowed",
+                          ...primaryButtonStyle,
+                          opacity: !canInputDaily || saving ? 0.6 : 1,
+                          cursor: !canInputDaily || saving ? "not-allowed" : "pointer",
                         }}
-                        disabled={!lastClearedMatrix}
+                        disabled={!canInputDaily || saving}
                       >
-                        還原
+                        {saving ? "儲存中..." : "儲存當日資料"}
                       </button>
-                    </>
-                  ) : null}
 
-                  <div style={{ fontSize: 15, color: "#334155" }}>
-                    當日合計：<b>{currentDayTotal}</b>
-                  </div>
-                </div>
-
-                <div style={tableWrapStyle}>
-                  <table style={tableStyle}>
-                    <thead>
-                      <tr>
-                        <th style={tableHeadStyle}>營業員 / 日期</th>
-                        {BUSINESS_TYPES.map((biz) => (
-                          <th key={biz} style={tableHeadStyle}>
-                            {biz}
-                          </th>
-                        ))}
-                        <th style={tableHeadStyle}>合計</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {staffOptions.map((staff) => {
-                        const rowTotal = BUSINESS_TYPES.reduce(
-                          (sum, biz) => sum + safeNumber(matrix?.[staff]?.[biz]),
-                          0
-                        );
-
-                        return (
-                          <tr key={staff}>
-                            <td style={nameCellStyle}>{staff}</td>
-                            {BUSINESS_TYPES.map((biz) => (
-                              <td key={biz} style={tableCellStyle}>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  value={matrix?.[staff]?.[biz] ?? ""}
-                                  onChange={(e) => handleChange(staff, biz, e.target.value)}
-                                  disabled={!canInputDaily}
-                                  style={{
-                                    ...cellInputStyle,
-                                    background: canInputDaily ? "#ffffff" : "#f8fafc",
-                                    opacity: canInputDaily ? 1 : 0.75,
-                                  }}
-                                />
-                              </td>
-                            ))}
-                            <td style={totalCellStyle}>{rowTotal}</td>
-                          </tr>
-                        );
-                      })}
-
-                      <tr style={{ background: "#f8fafc" }}>
-                        <td style={nameCellStyle}>欄位合計</td>
-                        {BUSINESS_TYPES.map((biz) => (
-                          <td key={biz} style={totalCellStyle}>
-                            {staffOptions.reduce(
-                              (sum, staff) => sum + safeNumber(matrix?.[staff]?.[biz]),
-                              0
-                            )}
-                          </td>
-                        ))}
-                        <td style={totalCellStyle}>{currentDayTotal}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div style={{ ...cardStyle, marginTop: 18 }}>
-                <h2 style={sectionTitleStyle}>報表中心</h2>
-
-                <div style={toolbarStyle}>
-                  <button
-                    onClick={() => setReportType("daily")}
-                    style={reportType === "daily" ? activeTabButtonStyle : tabButtonStyle}
-                  >
-                    日報表
-                  </button>
-                  <button
-                    onClick={() => setReportType("weekly")}
-                    style={reportType === "weekly" ? activeTabButtonStyle : tabButtonStyle}
-                  >
-                    週報表
-                  </button>
-                  <button
-                    onClick={() => setReportType("monthly")}
-                    style={reportType === "monthly" ? activeTabButtonStyle : tabButtonStyle}
-                  >
-                    月報表
-                  </button>
-                  <button
-                    onClick={() => setReportType("yearly")}
-                    style={reportType === "yearly" ? activeTabButtonStyle : tabButtonStyle}
-                  >
-                    年報表
-                  </button>
-                  <button onClick={exportReport} style={successButtonStyle}>
-                    匯出 Excel
-                  </button>
-                </div>
-
-                <div style={{ marginBottom: 14 }}>
-                  {(reportType === "daily" || reportType === "weekly") && (
-                    <input
-                      type="date"
-                      value={reportDate}
-                      onChange={(e) => setReportDate(e.target.value)}
-                      style={dateInputStyle}
-                    />
-                  )}
-                  {reportType === "monthly" && (
-                    <input
-                      type="month"
-                      value={reportMonth}
-                      onChange={(e) => setReportMonth(e.target.value)}
-                      style={dateInputStyle}
-                    />
-                  )}
-                  {reportType === "yearly" && (
-                    <input
-                      type="number"
-                      value={reportYear}
-                      onChange={(e) => setReportYear(e.target.value)}
-                      style={{ ...dateInputStyle, width: 120 }}
-                    />
-                  )}
-                </div>
-
-                <div style={{ marginBottom: 14, fontSize: 15 }}>
-                  總開戶數：<b>{reportSummary.total}</b>
-                </div>
-
-                <div style={tableWrapStyle}>
-                  <table style={tableStyle}>
-                    <thead>
-                      <tr>
-                        {reportType === "daily" ? (
-                          <>
-                            <th style={lightHeadStyle}>日期</th>
-                            <th style={lightHeadStyle}>營業員</th>
-                          </>
-                        ) : (
-                          <th style={lightHeadStyle}>營業員</th>
-                        )}
-                        {BUSINESS_TYPES.map((biz) => (
-                          <th key={biz} style={lightHeadStyle}>
-                            {biz}
-                          </th>
-                        ))}
-                        <th style={lightHeadStyle}>合計</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayRows.length ? (
-                        displayRows.map((row, idx) => (
-                          <tr key={`${row.staff}_${idx}_${row.date || "agg"}`}>
-                            {reportType === "daily" ? (
-                              <>
-                                <td style={tableCellStyle}>{row.date}</td>
-                                <td style={nameCellStyle}>{row.staff}</td>
-                              </>
-                            ) : (
-                              <td style={nameCellStyle}>{row.staff}</td>
-                            )}
-                            {BUSINESS_TYPES.map((biz) => (
-                              <td key={biz} style={tableCellStyle}>
-                                {row.values[biz] || 0}
-                              </td>
-                            ))}
-                            <td style={totalCellStyle}>{row.total}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td
-                            colSpan={BUSINESS_TYPES.length + (reportType === "daily" ? 3 : 2)}
-                            style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
+                      {canInputDaily ? (
+                        <>
+                          <button onClick={handleClearMatrix} style={warningButtonStyle}>
+                            清空
+                          </button>
+                          <button
+                            onClick={handleRestoreMatrix}
+                            style={{
+                              ...restoreButtonStyle,
+                              opacity: lastClearedMatrix ? 1 : 0.5,
+                              cursor: lastClearedMatrix ? "pointer" : "not-allowed",
+                            }}
+                            disabled={!lastClearedMatrix}
                           >
-                            目前沒有資料
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                            還原
+                          </button>
+                        </>
+                      ) : null}
 
-                <div style={summaryGridStyle}>
-                  <div style={summaryCardStyle}>
-                    <h3 style={summaryTitleStyle}>依營業員統計</h3>
-                    <ul style={listStyle}>
-                      {reportSummary.byStaff.map(([name, qty]) => (
-                        <li key={name} style={listItemStyle}>
-                          <span>{name}</span>
-                          <b>{qty}</b>
-                        </li>
-                      ))}
-                    </ul>
+                      <div style={{ fontSize: 15, color: "#334155" }}>
+                        當日合計：<b>{currentDayTotal}</b>
+                      </div>
+                    </div>
+
+                    <div style={tableWrapStyle}>
+                      <table style={tableStyle}>
+                        <thead>
+                          <tr>
+                            <th style={tableHeadStyle}>營業員 / 日期</th>
+                            {BUSINESS_TYPES.map((biz) => (
+                              <th key={biz} style={tableHeadStyle}>
+                                {biz}
+                              </th>
+                            ))}
+                            <th style={tableHeadStyle}>合計</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {staffOptions.map((staff) => {
+                            const rowTotal = BUSINESS_TYPES.reduce(
+                              (sum, biz) => sum + safeNumber(matrix?.[staff]?.[biz]),
+                              0
+                            );
+
+                            return (
+                              <tr key={staff}>
+                                <td style={nameCellStyle}>{staff}</td>
+                                {BUSINESS_TYPES.map((biz) => (
+                                  <td key={biz} style={tableCellStyle}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      value={matrix?.[staff]?.[biz] ?? ""}
+                                      onChange={(e) => handleChange(staff, biz, e.target.value)}
+                                      disabled={!canInputDaily}
+                                      style={{
+                                        ...cellInputStyle,
+                                        background: canInputDaily ? "#ffffff" : "#f8fafc",
+                                        opacity: canInputDaily ? 1 : 0.75,
+                                      }}
+                                    />
+                                  </td>
+                                ))}
+                                <td style={totalCellStyle}>{rowTotal}</td>
+                              </tr>
+                            );
+                          })}
+
+                          <tr style={{ background: "#f8fafc" }}>
+                            <td style={nameCellStyle}>欄位合計</td>
+                            {BUSINESS_TYPES.map((biz) => (
+                              <td key={biz} style={totalCellStyle}>
+                                {staffOptions.reduce(
+                                  (sum, staff) => sum + safeNumber(matrix?.[staff]?.[biz]),
+                                  0
+                                )}
+                              </td>
+                            ))}
+                            <td style={totalCellStyle}>{currentDayTotal}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
+                ) : null}
 
-                  <div style={summaryCardStyle}>
-                    <h3 style={summaryTitleStyle}>依業務別統計</h3>
-                    <ul style={listStyle}>
-                      {reportSummary.byBiz.map(([name, qty]) => (
-                        <li key={name} style={listItemStyle}>
-                          <span>{name}</span>
-                          <b>{qty}</b>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
+                <div style={{ ...cardStyle, marginTop: canSeeDailyInputSections ? 18 : 0 }}>
+                  <h2 style={sectionTitleStyle}>報表中心</h2>
 
-            <div>
-              {canManageStaff ? (
-                <div style={cardStyle}>
-                  <h2 style={sectionTitleStyle}>營業員維護</h2>
-
-                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                    <input
-                      type="text"
-                      placeholder="新增營業員姓名"
-                      value={newStaffName}
-                      onChange={(e) => setNewStaffName(e.target.value)}
-                      style={{ ...inputStyle, flex: 1 }}
-                      disabled={!canManageStaff}
-                    />
+                  <div style={toolbarStyle}>
                     <button
-                      onClick={handleAddStaff}
-                      style={{
-                        ...primaryButtonStyle,
-                        opacity: canManageStaff ? 1 : 0.6,
-                        cursor: canManageStaff ? "pointer" : "not-allowed",
-                      }}
-                      disabled={!canManageStaff}
+                      onClick={() => setReportType("daily")}
+                      style={reportType === "daily" ? activeTabButtonStyle : tabButtonStyle}
                     >
-                      新增
+                      日報表
+                    </button>
+                    <button
+                      onClick={() => setReportType("weekly")}
+                      style={reportType === "weekly" ? activeTabButtonStyle : tabButtonStyle}
+                    >
+                      週報表
+                    </button>
+                    <button
+                      onClick={() => setReportType("monthly")}
+                      style={reportType === "monthly" ? activeTabButtonStyle : tabButtonStyle}
+                    >
+                      月報表
+                    </button>
+                    <button
+                      onClick={() => setReportType("yearly")}
+                      style={reportType === "yearly" ? activeTabButtonStyle : tabButtonStyle}
+                    >
+                      年報表
+                    </button>
+                    <button onClick={exportReport} style={successButtonStyle}>
+                      匯出 Excel
                     </button>
                   </div>
 
-                  <div style={{ maxHeight: 360, overflowY: "auto" }}>
-                    {staffOptions.map((staff) => (
-                      <div key={staff} style={staffRowStyle}>
-                        <span>{staff}</span>
-                        <button
-                          onClick={() => handleRemoveStaff(staff)}
-                          style={{
-                            ...dangerButtonStyle,
-                            opacity: canManageStaff ? 1 : 0.6,
-                            cursor: canManageStaff ? "pointer" : "not-allowed",
-                          }}
-                          disabled={!canManageStaff}
-                        >
-                          移除
-                        </button>
-                      </div>
-                    ))}
+                  <div style={{ marginBottom: 14 }}>
+                    {(reportType === "daily" || reportType === "weekly") && (
+                      <input
+                        type="date"
+                        value={reportDate}
+                        onChange={(e) => setReportDate(e.target.value)}
+                        style={dateInputStyle}
+                      />
+                    )}
+                    {reportType === "monthly" && (
+                      <input
+                        type="month"
+                        value={reportMonth}
+                        onChange={(e) => setReportMonth(e.target.value)}
+                        style={dateInputStyle}
+                      />
+                    )}
+                    {reportType === "yearly" && (
+                      <input
+                        type="number"
+                        value={reportYear}
+                        onChange={(e) => setReportYear(e.target.value)}
+                        style={{ ...dateInputStyle, width: 120 }}
+                      />
+                    )}
                   </div>
-                </div>
-              ) : null}
 
-              <div style={{ ...cardStyle, marginTop: canManageStaff ? 18 : 0 }}>
-                <h2 style={sectionTitleStyle}>歷史日期回溯修改</h2>
-
-                <div style={{ color: "#64748b", marginBottom: 12, lineHeight: 1.7 }}>
-                  直接選日期載入。選到已有資料的日期時，左邊矩陣會自動帶回，修改後再按儲存即可。
-                </div>
-
-                <div style={toolbarStyle}>
-                  <input
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    style={dateInputStyle}
-                  />
-                  <button onClick={() => handleLoadDate(date)} style={secondaryButtonStyle}>
-                    載入該日資料
-                  </button>
-                </div>
-
-                <div style={{ fontSize: 14, color: "#334155", lineHeight: 1.9 }}>
-                  <div>
-                    目前編輯日期：<b>{formatDate(date)}</b>
+                  <div style={{ marginBottom: 14, fontSize: 15 }}>
+                    總開戶數：<b>{reportSummary.total}</b>
                   </div>
-                  <div>
-                    已儲存歷史筆數：<b>{historyDates.length}</b> 天
+
+                  <div style={tableWrapStyle}>
+                    <table style={tableStyle}>
+                      <thead>
+                        <tr>
+                          {reportType === "daily" ? (
+                            <>
+                              <th style={lightHeadStyle}>日期</th>
+                              <th style={lightHeadStyle}>營業員</th>
+                            </>
+                          ) : (
+                            <th style={lightHeadStyle}>營業員</th>
+                          )}
+                          {BUSINESS_TYPES.map((biz) => (
+                            <th key={biz} style={lightHeadStyle}>
+                              {biz}
+                            </th>
+                          ))}
+                          <th style={lightHeadStyle}>合計</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {displayRows.length ? (
+                          displayRows.map((row, idx) => (
+                            <tr key={`${row.staff}_${idx}_${row.date || "agg"}`}>
+                              {reportType === "daily" ? (
+                                <>
+                                  <td style={tableCellStyle}>{row.date}</td>
+                                  <td style={nameCellStyle}>{row.staff}</td>
+                                </>
+                              ) : (
+                                <td style={nameCellStyle}>{row.staff}</td>
+                              )}
+                              {BUSINESS_TYPES.map((biz) => (
+                                <td key={biz} style={tableCellStyle}>
+                                  {row.values[biz] || 0}
+                                </td>
+                              ))}
+                              <td style={totalCellStyle}>{row.total}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td
+                              colSpan={BUSINESS_TYPES.length + (reportType === "daily" ? 3 : 2)}
+                              style={{ ...tableCellStyle, padding: 18, textAlign: "center" }}
+                            >
+                              目前沒有資料
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
-                  <div>
-                    最早日期：
-                    <b>
-                      {historyDates.length
-                        ? formatDate(historyDates[historyDates.length - 1])
-                        : "—"}
-                    </b>
-                  </div>
-                  <div>
-                    最近日期：
-                    <b>{historyDates.length ? formatDate(historyDates[0]) : "—"}</b>
+
+                  <div style={summaryGridStyle}>
+                    <div style={summaryCardStyle}>
+                      <h3 style={summaryTitleStyle}>依營業員統計</h3>
+                      <ul style={listStyle}>
+                        {reportSummary.byStaff.map(([name, qty]) => (
+                          <li key={name} style={listItemStyle}>
+                            <span>{name}</span>
+                            <b>{qty}</b>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div style={summaryCardStyle}>
+                      <h3 style={summaryTitleStyle}>依業務別統計</h3>
+                      <ul style={listStyle}>
+                        {reportSummary.byBiz.map(([name, qty]) => (
+                          <li key={name} style={listItemStyle}>
+                            <span>{name}</span>
+                            <b>{qty}</b>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                 </div>
               </div>
+
+              <div>
+                {canManageStaff ? (
+                  <div style={cardStyle}>
+                    <h2 style={sectionTitleStyle}>營業員維護</h2>
+
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      <input
+                        type="text"
+                        placeholder="新增營業員姓名"
+                        value={newStaffName}
+                        onChange={(e) => setNewStaffName(e.target.value)}
+                        style={{ ...inputStyle, flex: 1 }}
+                        disabled={!canManageStaff}
+                      />
+                      <button
+                        onClick={handleAddStaff}
+                        style={{
+                          ...primaryButtonStyle,
+                          opacity: canManageStaff ? 1 : 0.6,
+                          cursor: canManageStaff ? "pointer" : "not-allowed",
+                        }}
+                        disabled={!canManageStaff}
+                      >
+                        新增
+                      </button>
+                    </div>
+
+                    <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                      {staffOptions.map((staff) => (
+                        <div key={staff} style={staffRowStyle}>
+                          <span>{staff}</span>
+                          <button
+                            onClick={() => handleRemoveStaff(staff)}
+                            style={{
+                              ...dangerButtonStyle,
+                              opacity: canManageStaff ? 1 : 0.6,
+                              cursor: canManageStaff ? "pointer" : "not-allowed",
+                            }}
+                            disabled={!canManageStaff}
+                          >
+                            移除
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {canSeeDailyInputSections ? (
+                  <div style={{ ...cardStyle, marginTop: canManageStaff ? 18 : 0 }}>
+                    <h2 style={sectionTitleStyle}>歷史日期回溯修改</h2>
+
+                    <div style={{ color: "#64748b", marginBottom: 12, lineHeight: 1.7 }}>
+                      直接選日期載入。選到已有資料的日期時，左邊矩陣會自動帶回，修改後再按儲存即可。
+                    </div>
+
+                    <div style={toolbarStyle}>
+                      <input
+                        type="date"
+                        value={date}
+                        onChange={(e) => setDate(e.target.value)}
+                        style={dateInputStyle}
+                      />
+                      <button onClick={() => handleLoadDate(date)} style={secondaryButtonStyle}>
+                        載入該日資料
+                      </button>
+                    </div>
+
+                    <div style={{ fontSize: 14, color: "#334155", lineHeight: 1.9 }}>
+                      <div>
+                        目前編輯日期：<b>{formatDate(date)}</b>
+                      </div>
+                      <div>
+                        已儲存歷史筆數：<b>{historyDates.length}</b> 天
+                      </div>
+                      <div>
+                        最早日期：
+                        <b>
+                          {historyDates.length
+                            ? formatDate(historyDates[historyDates.length - 1])
+                            : "—"}
+                        </b>
+                      </div>
+                      <div>
+                        最近日期：
+                        <b>{historyDates.length ? formatDate(historyDates[0]) : "—"}</b>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
-          </div>
           </>
         ) : canSeePeoplePage ? (
           <div style={peopleGridStyle}>
